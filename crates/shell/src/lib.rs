@@ -29,7 +29,7 @@ use gugalanna_js::JsRuntime;
 use gugalanna_layout::{build_layout_tree, layout_block, BoxType, ContainingBlock, LayoutBox};
 use gugalanna_net::HttpClient;
 use gugalanna_render::{build_display_list, CursorType, DisplayList, RenderBackend, RenderColor, SdlBackend};
-use gugalanna_style::{Cascade, StyleTree};
+use gugalanna_style::{Cascade, MatchingContext, StyleTree};
 
 use crate::event::{poll_events, start_text_input, stop_text_input, BrowserEvent, Modifiers, MouseButton};
 use crate::form::FormState;
@@ -188,6 +188,8 @@ pub struct Browser {
     transition_manager: TransitionManager,
     /// Last frame timestamp for delta time calculation
     last_frame: Instant,
+    /// Currently hovered element (for :hover pseudo-class)
+    hovered_element: Option<NodeId>,
 }
 
 impl Browser {
@@ -220,6 +222,7 @@ impl Browser {
             current_cursor: CursorType::Arrow,
             transition_manager: TransitionManager::new(),
             last_frame: Instant::now(),
+            hovered_element: None,
         })
     }
 
@@ -937,7 +940,12 @@ impl Browser {
             }
 
             // Tick CSS transitions
-            let _transitions_active = self.transition_manager.tick(delta_ms);
+            let transitions_active = self.transition_manager.tick(delta_ms);
+
+            // If transitions are active, rebuild the page with animated values
+            if transitions_active {
+                self.relayout_page_with_animations(true);
+            }
 
             // Update loading animation
             self.chrome.tick_loading();
@@ -1433,16 +1441,47 @@ impl Browser {
 
     /// Re-layout the page with new viewport dimensions
     fn relayout_page(&mut self) {
+        self.relayout_page_with_animations(false);
+    }
+
+    fn relayout_page_with_animations(&mut self, apply_animations: bool) {
         let active_id = self.active_tab_id;
         let viewport_width = self.config.width as f32;
         let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
+
+        // Collect animated values if needed
+        let animated_values: Vec<(usize, String, f32)> = if apply_animations {
+            let mut values = Vec::new();
+            // Get all active transitions and their current values
+            for (element_id, transitions) in self.transition_manager.iter_active() {
+                for t in transitions {
+                    values.push((element_id, t.property.clone(), t.current_value()));
+                }
+            }
+            values
+        } else {
+            Vec::new()
+        };
 
         if let Some(tab) = self.tab_mut(active_id) {
             if let Some(ref mut page) = tab.page {
                 let dom_ref = page.dom.borrow();
 
                 // Rebuild style tree with new viewport dimensions
-                let style_tree = StyleTree::build(&*dom_ref, &page.cascade, viewport_width, viewport_height);
+                let mut style_tree = StyleTree::build(&*dom_ref, &page.cascade, viewport_width, viewport_height);
+
+                // Apply animated values to style tree
+                for (element_id, property, value) in &animated_values {
+                    let node_id = NodeId(*element_id as u32);
+                    if let Some(style) = style_tree.get_style_mut(node_id) {
+                        match property.as_str() {
+                            "opacity" => style.opacity = *value,
+                            "width" => style.width = Some(*value),
+                            "height" => style.height = Some(*value),
+                            _ => {}
+                        }
+                    }
+                }
 
                 // Get root element
                 let body_ids = dom_ref.get_elements_by_tag_name("body");
@@ -1816,8 +1855,9 @@ impl Browser {
         }
     }
 
-    /// Handle mouse movement (for cursor changes on link hover)
+    /// Handle mouse movement (for cursor changes on link hover and :hover transitions)
     fn handle_mouse_move(&mut self, x: f32, y: f32) {
+        // Update cursor for links
         let is_over_link = self.is_over_link(x, y);
 
         let desired_cursor = if is_over_link {
@@ -1829,6 +1869,229 @@ impl Browser {
         if desired_cursor != self.current_cursor {
             self.current_cursor = desired_cursor;
             self.backend.set_cursor(desired_cursor);
+        }
+
+        // Track hovered element for :hover CSS transitions
+        let new_hovered = self.get_element_at(x, y);
+
+        if new_hovered != self.hovered_element {
+            // Hover changed - trigger style recomputation and transitions
+            self.handle_hover_change(self.hovered_element, new_hovered);
+            self.hovered_element = new_hovered;
+        }
+    }
+
+    /// Get the element under the cursor (if any)
+    fn get_element_at(&self, x: f32, y: f32) -> Option<NodeId> {
+        // Skip if in chrome area
+        if y < CHROME_HEIGHT {
+            return None;
+        }
+
+        if let Some(tab) = self.active_tab() {
+            if let Some(ref page) = tab.page {
+                let content_y = (y - CHROME_HEIGHT) + page.scroll_y;
+                hit_test_regions(&page.hit_regions, x, content_y)
+                    .map(|id| NodeId(id))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Handle hover state change - detect property changes and start transitions
+    fn handle_hover_change(&mut self, old_hovered: Option<NodeId>, new_hovered: Option<NodeId>) {
+        // Collect affected elements (both old and new hover chains)
+        let affected = self.collect_affected_hover_elements(old_hovered, new_hovered);
+
+        if affected.is_empty() {
+            return;
+        }
+
+        // Get the page data we need
+        let (dom_rc, cascade, viewport_width, viewport_height) = {
+            let tab = match self.active_tab() {
+                Some(t) => t,
+                None => return,
+            };
+            let page = match &tab.page {
+                Some(p) => p,
+                None => return,
+            };
+            (
+                page.dom.clone(),
+                page.cascade.clone(),
+                self.config.width as f32,
+                self.config.height as f32,
+            )
+        };
+
+        let dom = dom_rc.borrow();
+
+        // Create contexts for old and new hover states
+        let old_context = match old_hovered {
+            Some(id) => MatchingContext::with_hover(&dom, id),
+            None => MatchingContext::new(),
+        };
+
+        let new_context = match new_hovered {
+            Some(id) => MatchingContext::with_hover(&dom, id),
+            None => MatchingContext::new(),
+        };
+
+        // Check each affected element for property changes
+        for element_id in affected {
+            self.check_element_transitions(
+                element_id,
+                &dom,
+                &cascade,
+                &old_context,
+                &new_context,
+                viewport_width,
+                viewport_height,
+            );
+        }
+    }
+
+    /// Collect all elements affected by a hover change (both old and new hover chains)
+    fn collect_affected_hover_elements(
+        &self,
+        old_hovered: Option<NodeId>,
+        new_hovered: Option<NodeId>,
+    ) -> Vec<NodeId> {
+        let mut affected = Vec::new();
+
+        let dom_rc = if let Some(tab) = self.active_tab() {
+            tab.page.as_ref().map(|p| p.dom.clone())
+        } else {
+            None
+        };
+
+        let dom_rc = match dom_rc {
+            Some(d) => d,
+            None => return affected,
+        };
+
+        let dom = dom_rc.borrow();
+
+        // Collect old hover chain (element and ancestors)
+        if let Some(id) = old_hovered {
+            let mut current = Some(id);
+            while let Some(node_id) = current {
+                if !affected.contains(&node_id) {
+                    affected.push(node_id);
+                }
+                current = dom.get(node_id).and_then(|n| n.parent);
+            }
+        }
+
+        // Collect new hover chain (element and ancestors)
+        if let Some(id) = new_hovered {
+            let mut current = Some(id);
+            while let Some(node_id) = current {
+                if !affected.contains(&node_id) {
+                    affected.push(node_id);
+                }
+                current = dom.get(node_id).and_then(|n| n.parent);
+            }
+        }
+
+        affected
+    }
+
+    /// Check an element for property changes and start transitions
+    fn check_element_transitions(
+        &mut self,
+        element_id: NodeId,
+        dom: &gugalanna_dom::DomTree,
+        cascade: &gugalanna_style::Cascade,
+        old_context: &MatchingContext,
+        new_context: &MatchingContext,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
+        use gugalanna_style::{StyleResolver, ResolveContext};
+
+        // Get declarations with old and new hover states
+        let old_decls = cascade.get_matching_declarations_with_context(dom, element_id, old_context);
+        let new_decls = cascade.get_matching_declarations_with_context(dom, element_id, new_context);
+
+        // Create resolve context for length conversions
+        let context = ResolveContext::new()
+            .with_viewport(viewport_width, viewport_height);
+
+        // Extract property values from declarations
+        fn get_property_value(
+            decls: &[gugalanna_style::MatchedDeclaration],
+            property: &str,
+        ) -> Option<gugalanna_css::CssValue> {
+            // Later declarations override earlier ones, so iterate in reverse
+            for matched in decls.iter().rev() {
+                if matched.declaration.property == property {
+                    return Some(matched.declaration.value.clone());
+                }
+            }
+            None
+        }
+
+        // Extract transition definitions from new declarations
+        let transition_defs = if let Some(value) = get_property_value(&new_decls, "transition") {
+            StyleResolver::resolve_transition(&value).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        if transition_defs.is_empty() {
+            return;
+        }
+
+        // Check each transition definition
+        for transition_def in transition_defs {
+            let properties_to_check = if transition_def.property == "all" {
+                vec!["opacity", "width", "height"]
+            } else {
+                vec![transition_def.property.as_str()]
+            };
+
+            for prop in properties_to_check {
+                let old_value = get_property_value(&old_decls, prop);
+                let new_value = get_property_value(&new_decls, prop);
+
+                // Get numeric values for comparison
+                let (old_num, new_num) = match prop {
+                    "opacity" => {
+                        let old_op = old_value.and_then(|v| StyleResolver::resolve_opacity(&v)).unwrap_or(1.0);
+                        let new_op = new_value.and_then(|v| StyleResolver::resolve_opacity(&v)).unwrap_or(1.0);
+                        (old_op, new_op)
+                    }
+                    "width" => {
+                        let old_w = old_value.and_then(|v| StyleResolver::resolve_length(&v, &context)).unwrap_or(0.0);
+                        let new_w = new_value.and_then(|v| StyleResolver::resolve_length(&v, &context)).unwrap_or(0.0);
+                        (old_w, new_w)
+                    }
+                    "height" => {
+                        let old_h = old_value.and_then(|v| StyleResolver::resolve_length(&v, &context)).unwrap_or(0.0);
+                        let new_h = new_value.and_then(|v| StyleResolver::resolve_length(&v, &context)).unwrap_or(0.0);
+                        (old_h, new_h)
+                    }
+                    _ => continue,
+                };
+
+                // Only start transition if value changed significantly
+                if (old_num - new_num).abs() > 0.001 {
+                    self.transition_manager.start_transition(
+                        element_id.0 as usize,
+                        prop.to_string(),
+                        old_num,
+                        new_num,
+                        transition_def.duration_ms,
+                        transition_def.delay_ms,
+                        transition_def.timing_function,
+                    );
+                }
+            }
         }
     }
 

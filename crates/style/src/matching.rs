@@ -2,11 +2,61 @@
 //!
 //! Matches CSS selectors against DOM elements.
 
+use std::collections::HashSet;
 use gugalanna_css::{Selector, SelectorPart, Combinator, AttributeOp};
 use gugalanna_dom::{DomTree, NodeId, ElementData};
 
+/// Context for dynamic pseudo-class matching (hover, focus, etc.)
+#[derive(Debug, Clone, Default)]
+pub struct MatchingContext {
+    /// Elements currently being hovered
+    pub hovered: HashSet<NodeId>,
+    /// Element currently focused
+    pub focused: Option<NodeId>,
+}
+
+impl MatchingContext {
+    /// Create a new empty matching context
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a context with a hovered element and its ancestors
+    pub fn with_hover(tree: &DomTree, element_id: NodeId) -> Self {
+        let mut ctx = Self::new();
+        // Add the element and all its ancestors to the hover set
+        // (because :hover applies to parent elements too)
+        let mut current = Some(element_id);
+        while let Some(id) = current {
+            ctx.hovered.insert(id);
+            current = tree.get(id).and_then(|n| n.parent);
+        }
+        ctx
+    }
+
+    /// Check if an element is hovered
+    pub fn is_hovered(&self, element_id: NodeId) -> bool {
+        self.hovered.contains(&element_id)
+    }
+
+    /// Check if an element is focused
+    pub fn is_focused(&self, element_id: NodeId) -> bool {
+        self.focused == Some(element_id)
+    }
+}
+
 /// Check if a selector matches a specific element in the DOM tree
 pub fn matches_selector(tree: &DomTree, element_id: NodeId, selector: &Selector) -> bool {
+    matches_selector_with_context(tree, element_id, selector, &MatchingContext::new())
+}
+
+/// Check if a selector matches with dynamic pseudo-class context (hover, focus, etc.)
+pub fn matches_selector_with_context(
+    tree: &DomTree,
+    element_id: NodeId,
+    selector: &Selector,
+    context: &MatchingContext,
+) -> bool {
     // Start matching from the rightmost part of the selector
     // and work backwards through combinators
     let parts = &selector.parts;
@@ -35,7 +85,7 @@ pub fn matches_selector(tree: &DomTree, element_id: NodeId, selector: &Selector)
         }
 
         // Match all parts in the compound selector against current element
-        if !matches_compound(tree, current_element, &parts[compound_start..=compound_end]) {
+        if !matches_compound(tree, current_element, &parts[compound_start..=compound_end], context) {
             return false;
         }
 
@@ -54,7 +104,7 @@ pub fn matches_selector(tree: &DomTree, element_id: NodeId, selector: &Selector)
         part_index = if compound_start > 1 { compound_start - 2 } else { return true };
 
         // Find the next element based on the combinator
-        current_element = match find_matching_element(tree, current_element, combinator, &parts[..=part_index]) {
+        current_element = match find_matching_element(tree, current_element, combinator, &parts[..=part_index], context) {
             Some(id) => id,
             None => return false,
         };
@@ -62,7 +112,12 @@ pub fn matches_selector(tree: &DomTree, element_id: NodeId, selector: &Selector)
 }
 
 /// Match a compound selector (consecutive simple selectors) against an element
-fn matches_compound(tree: &DomTree, element_id: NodeId, parts: &[SelectorPart]) -> bool {
+fn matches_compound(
+    tree: &DomTree,
+    element_id: NodeId,
+    parts: &[SelectorPart],
+    context: &MatchingContext,
+) -> bool {
     let node = match tree.get(element_id) {
         Some(n) => n,
         None => return false,
@@ -74,7 +129,7 @@ fn matches_compound(tree: &DomTree, element_id: NodeId, parts: &[SelectorPart]) 
     };
 
     for part in parts {
-        if !matches_simple_selector(tree, element_id, element, part) {
+        if !matches_simple_selector(tree, element_id, element, part, context) {
             return false;
         }
     }
@@ -88,6 +143,7 @@ fn matches_simple_selector(
     element_id: NodeId,
     element: &ElementData,
     part: &SelectorPart,
+    context: &MatchingContext,
 ) -> bool {
     match part {
         SelectorPart::Universal => true,
@@ -103,7 +159,7 @@ fn matches_simple_selector(
         }
 
         SelectorPart::PseudoClass { name, args } => {
-            matches_pseudo_class(tree, element_id, element, name, args.as_deref())
+            matches_pseudo_class(tree, element_id, element, name, args.as_deref(), context)
         }
 
         SelectorPart::PseudoElement { .. } => {
@@ -166,6 +222,7 @@ fn matches_pseudo_class(
     element: &ElementData,
     name: &str,
     args: Option<&str>,
+    context: &MatchingContext,
 ) -> bool {
     match name {
         "first-child" => is_first_child(tree, element_id),
@@ -211,7 +268,7 @@ fn matches_pseudo_class(
             if let Some(args) = args {
                 // Parse the selector argument and check if it doesn't match
                 if let Ok(sel) = Selector::parse(args) {
-                    !matches_selector(tree, element_id, &sel)
+                    !matches_selector_with_context(tree, element_id, &sel, context)
                 } else {
                     true
                 }
@@ -228,8 +285,12 @@ fn matches_pseudo_class(
         "read-only" => element.get_attribute("readonly").is_some(),
         "read-write" => element.get_attribute("readonly").is_none(),
 
-        // Dynamic pseudo-classes (these require JS/user interaction, always false for now)
-        "hover" | "active" | "focus" | "focus-within" | "focus-visible" | "visited" | "target" => false,
+        // Dynamic pseudo-classes - now using context
+        "hover" => context.is_hovered(element_id),
+        "focus" => context.is_focused(element_id),
+
+        // Not yet implemented dynamic pseudo-classes
+        "active" | "focus-within" | "focus-visible" | "visited" | "target" => false,
 
         _ => false,
     }
@@ -532,6 +593,7 @@ fn find_matching_element(
     start_element: NodeId,
     combinator: Combinator,
     remaining_parts: &[SelectorPart],
+    context: &MatchingContext,
 ) -> Option<NodeId> {
     // Find compound selector bounds in remaining_parts
     let compound_end = remaining_parts.len() - 1;
@@ -547,7 +609,7 @@ fn find_matching_element(
             // Check all ancestors
             let mut current = tree.get(start_element)?.parent;
             while let Some(parent_id) = current {
-                if matches_compound(tree, parent_id, compound) {
+                if matches_compound(tree, parent_id, compound, context) {
                     return Some(parent_id);
                 }
                 current = tree.get(parent_id)?.parent;
@@ -557,7 +619,7 @@ fn find_matching_element(
         Combinator::Child => {
             // Check immediate parent only
             let parent_id = tree.get(start_element)?.parent?;
-            if matches_compound(tree, parent_id, compound) {
+            if matches_compound(tree, parent_id, compound, context) {
                 Some(parent_id)
             } else {
                 None
@@ -571,7 +633,7 @@ fn find_matching_element(
             while let Some(id) = current {
                 if let Some(node) = tree.get(id) {
                     if node.is_element() {
-                        if matches_compound(tree, id, compound) {
+                        if matches_compound(tree, id, compound, context) {
                             return Some(id);
                         }
                         return None;
@@ -588,7 +650,7 @@ fn find_matching_element(
             let mut current = tree.get(start_element)?.prev_sibling;
             while let Some(id) = current {
                 if let Some(node) = tree.get(id) {
-                    if node.is_element() && matches_compound(tree, id, compound) {
+                    if node.is_element() && matches_compound(tree, id, compound, context) {
                         return Some(id);
                     }
                     current = node.prev_sibling;

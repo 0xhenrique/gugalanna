@@ -6,7 +6,7 @@
 use gugalanna_css::{Stylesheet, Rule, StyleRule, Declaration, Specificity, parse_inline_style};
 use gugalanna_dom::{DomTree, NodeId};
 
-use crate::matching::matches_selector;
+use crate::matching::{matches_selector_with_context, MatchingContext};
 
 /// Origin of a stylesheet
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,6 +79,7 @@ impl MatchedDeclaration {
 }
 
 /// Cascade context for style computation
+#[derive(Clone)]
 pub struct Cascade {
     /// User agent stylesheets
     ua_stylesheets: Vec<Stylesheet>,
@@ -119,6 +120,16 @@ impl Cascade {
         tree: &DomTree,
         element_id: NodeId,
     ) -> Vec<MatchedDeclaration> {
+        self.get_matching_declarations_with_context(tree, element_id, &MatchingContext::new())
+    }
+
+    /// Get all matching declarations with dynamic pseudo-class context (hover, focus, etc.)
+    pub fn get_matching_declarations_with_context(
+        &self,
+        tree: &DomTree,
+        element_id: NodeId,
+        context: &MatchingContext,
+    ) -> Vec<MatchedDeclaration> {
         let mut declarations = Vec::new();
         let mut source_order = 0u32;
 
@@ -131,6 +142,7 @@ impl Cascade {
                 Origin::UserAgent,
                 &mut source_order,
                 &mut declarations,
+                context,
             );
         }
 
@@ -142,6 +154,7 @@ impl Cascade {
                 Origin::User,
                 &mut source_order,
                 &mut declarations,
+                context,
             );
         }
 
@@ -153,6 +166,7 @@ impl Cascade {
                 Origin::Author,
                 &mut source_order,
                 &mut declarations,
+                context,
             );
         }
 
@@ -193,6 +207,7 @@ impl Cascade {
         origin: Origin,
         source_order: &mut u32,
         declarations: &mut Vec<MatchedDeclaration>,
+        context: &MatchingContext,
     ) {
         for rule in &stylesheet.rules {
             match rule {
@@ -204,6 +219,7 @@ impl Cascade {
                         origin,
                         source_order,
                         declarations,
+                        context,
                     );
                 }
                 Rule::Media(media_rule) => {
@@ -218,6 +234,7 @@ impl Cascade {
                                 origin,
                                 source_order,
                                 declarations,
+                                context,
                             );
                         }
                     }
@@ -236,12 +253,13 @@ impl Cascade {
         origin: Origin,
         source_order: &mut u32,
         declarations: &mut Vec<MatchedDeclaration>,
+        context: &MatchingContext,
     ) {
         // Find the highest specificity selector that matches
         let mut best_specificity: Option<Specificity> = None;
 
         for selector in &rule.selectors {
-            if matches_selector(tree, element_id, selector) {
+            if matches_selector_with_context(tree, element_id, selector, context) {
                 match &best_specificity {
                     Some(spec) if selector.specificity <= *spec => {}
                     _ => best_specificity = Some(selector.specificity),

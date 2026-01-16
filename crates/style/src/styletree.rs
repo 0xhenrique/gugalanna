@@ -52,6 +52,11 @@ impl StyleTree {
         self.styles.get(&node_id)
     }
 
+    /// Get mutable computed style for a node (for applying animated values)
+    pub fn get_style_mut(&mut self, node_id: NodeId) -> Option<&mut ComputedStyle> {
+        self.styles.get_mut(&node_id)
+    }
+
     /// Compute styles recursively for the tree
     fn compute_styles_recursive(
         &mut self,

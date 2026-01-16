@@ -10,7 +10,7 @@ pub mod styletree;
 
 use gugalanna_css::Color;
 
-pub use matching::matches_selector;
+pub use matching::{matches_selector, matches_selector_with_context, MatchingContext};
 pub use cascade::{Cascade, Origin, MatchedDeclaration, default_ua_stylesheet};
 pub use properties::{Inheritance, is_inherited, get_inheritance};
 pub use resolver::{ResolveContext, StyleResolver};

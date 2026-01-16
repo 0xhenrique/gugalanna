@@ -211,6 +211,11 @@ impl TransitionManager {
         !self.active.is_empty()
     }
 
+    /// Iterate over all active transitions (element_id, transitions)
+    pub fn iter_active(&self) -> impl Iterator<Item = (usize, &Vec<ActiveTransition>)> {
+        self.active.iter().map(|(k, v)| (*k, v))
+    }
+
     /// Get all active transitions for an element
     pub fn get_transitions(&self, element_id: usize) -> Option<&Vec<ActiveTransition>> {
         self.active.get(&element_id)

@@ -8,7 +8,7 @@ use crate::selector::Selector;
 use crate::value::{CssValue, ValueParser};
 
 /// A CSS stylesheet
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Stylesheet {
     /// All rules in the stylesheet
     pub rules: Vec<Rule>,
@@ -28,7 +28,7 @@ impl Stylesheet {
 }
 
 /// A CSS rule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Rule {
     /// Style rule (selector { declarations })
     Style(StyleRule),
@@ -43,7 +43,7 @@ pub enum Rule {
 }
 
 /// A style rule (selector block)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StyleRule {
     /// Selectors for this rule
     pub selectors: Vec<Selector>,
@@ -52,7 +52,7 @@ pub struct StyleRule {
 }
 
 /// @import rule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImportRule {
     /// URL to import
     pub url: String,
@@ -61,7 +61,7 @@ pub struct ImportRule {
 }
 
 /// @media rule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MediaRule {
     /// Media query
     pub query: String,
@@ -70,14 +70,14 @@ pub struct MediaRule {
 }
 
 /// @font-face rule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FontFaceRule {
     /// Declarations
     pub declarations: Vec<Declaration>,
 }
 
 /// @keyframes rule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KeyframesRule {
     /// Animation name
     pub name: String,
@@ -86,7 +86,7 @@ pub struct KeyframesRule {
 }
 
 /// A single keyframe
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Keyframe {
     /// Selectors (e.g., "0%", "from", "50%, 75%")
     pub selectors: Vec<String>,
