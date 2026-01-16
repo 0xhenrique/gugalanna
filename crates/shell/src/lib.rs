@@ -893,7 +893,9 @@ impl Browser {
 
                     BrowserEvent::MouseDown { x, y, button } => {
                         if button == MouseButton::Left {
-                            self.handle_click(x, y);
+                            if self.handle_click(x, y) {
+                                break 'running;
+                            }
                         }
                     }
 
@@ -1459,7 +1461,8 @@ impl Browser {
     }
 
     /// Handle a mouse click
-    fn handle_click(&mut self, x: f32, y: f32) {
+    /// Returns true if the browser should quit (last tab closed)
+    fn handle_click(&mut self, x: f32, y: f32) -> bool {
         // Check chrome first
         if let Some(hit) = self.chrome.hit_test(x, y) {
             match hit {
@@ -1468,7 +1471,8 @@ impl Browser {
                 }
                 ChromeHit::TabClose(id) => {
                     if self.close_tab(id) {
-                        // Last tab closed - this will cause quit, handled elsewhere
+                        // Last tab closed - quit
+                        return true;
                     }
                 }
                 ChromeHit::NewTab => {
@@ -1501,7 +1505,7 @@ impl Browser {
                     self.focus_address_bar();
                 }
             }
-            return;
+            return false;
         }
 
         // Blur address bar if clicking outside
@@ -1544,25 +1548,25 @@ impl Browser {
                 match form_elem {
                     FormElementInfo::TextInput { node_id, .. } => {
                         self.focus_form_input(*node_id);
-                        return;
+                        return false;
                     }
                     FormElementInfo::Checkbox { node_id } => {
                         self.toggle_checkbox(*node_id);
-                        return;
+                        return false;
                     }
                     FormElementInfo::Radio { node_id, name } => {
                         self.select_radio(*node_id, name);
-                        return;
+                        return false;
                     }
                     FormElementInfo::Submit { node_id } => {
                         log::info!("Submit button clicked (node {})", node_id.0);
                         self.submit_form(*node_id);
-                        return;
+                        return false;
                     }
                     FormElementInfo::Button { node_id } => {
                         log::info!("Button clicked (node {})", node_id.0);
                         // Dispatch to JS if available
-                        return;
+                        return false;
                     }
                 }
             }
@@ -1594,7 +1598,7 @@ impl Browser {
                 // Handle fragment-only links (same page scroll)
                 if href.starts_with('#') {
                     self.scroll_to_fragment(&href[1..]);
-                    return;
+                    return false;
                 }
 
                 // Resolve the URL and navigate
@@ -1608,7 +1612,7 @@ impl Browser {
                         log::error!("Failed to resolve URL '{}': {}", href, e);
                     }
                 }
-                return;
+                return false;
             }
 
             // Not a link - dispatch click to JS
@@ -1625,6 +1629,7 @@ impl Browser {
                 }
             }
         }
+        false
     }
 
     /// Focus the address bar
