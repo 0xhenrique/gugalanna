@@ -1,0 +1,20 @@
+[package]
+name = "gugalanna-shell"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+gugalanna-net.workspace = true
+gugalanna-html.workspace = true
+gugalanna-css.workspace = true
+gugalanna-dom.workspace = true
+gugalanna-style.workspace = true
+gugalanna-layout.workspace = true
+gugalanna-render.workspace = true
+gugalanna-js.workspace = true
+sdl2.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+log.workspace = true

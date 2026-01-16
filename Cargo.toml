@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Henrique <0xhenrique@github.com>"]
+license = "AGPL-3"
+repository = "https://github.com/0xhenrique/gugalanna"
+
+[workspace.dependencies]
+# Internal crates
+gugalanna-net = { path = "crates/net" }
+gugalanna-html = { path = "crates/html" }
+gugalanna-css = { path = "crates/css" }
+gugalanna-dom = { path = "crates/dom" }
+gugalanna-style = { path = "crates/style" }
+gugalanna-layout = { path = "crates/layout" }
+gugalanna-render = { path = "crates/render" }
+gugalanna-js = { path = "crates/js" }
+gugalanna-shell = { path = "crates/shell" }
+
+# Networking
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "gzip", "deflate"] }
+url = "2"
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# JavaScript (QuickJS)
+rquickjs = { version = "0.6", features = ["bindgen", "classes", "properties", "parallel"] }
+
+# Graphics
+sdl2 = "0.37"
+
+# Fonts & Images
+fontdue = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# Utilities
+thiserror = "1"
+log = "0.4"
+env_logger = "0.11"
+smallvec = "1"
+rustc-hash = "2"
+string_cache = "0.8"
+
+# Serialization (for debugging)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

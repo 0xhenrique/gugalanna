@@ -1,0 +1,13 @@
+[package]
+name = "gugalanna-dom"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+log.workspace = true
+string_cache.workspace = true
+smallvec.workspace = true
+rustc-hash.workspace = true

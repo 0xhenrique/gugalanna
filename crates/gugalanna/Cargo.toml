@@ -1,0 +1,25 @@
+[package]
+name = "gugalanna"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gugalanna"
+path = "src/main.rs"
+
+[dependencies]
+gugalanna-net.workspace = true
+gugalanna-html.workspace = true
+gugalanna-css.workspace = true
+gugalanna-dom.workspace = true
+gugalanna-style.workspace = true
+gugalanna-layout.workspace = true
+gugalanna-render.workspace = true
+gugalanna-js.workspace = true
+gugalanna-shell.workspace = true
+url.workspace = true
+tokio.workspace = true
+log.workspace = true
+env_logger.workspace = true

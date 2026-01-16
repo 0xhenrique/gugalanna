@@ -1,0 +1,14 @@
+[package]
+name = "gugalanna-style"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+gugalanna-dom.workspace = true
+gugalanna-css.workspace = true
+thiserror.workspace = true
+log.workspace = true
+smallvec.workspace = true
+rustc-hash.workspace = true

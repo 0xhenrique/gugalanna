@@ -1,0 +1,13 @@
+[package]
+name = "gugalanna-layout"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+gugalanna-dom.workspace = true
+gugalanna-style.workspace = true
+thiserror.workspace = true
+log.workspace = true
+smallvec.workspace = true

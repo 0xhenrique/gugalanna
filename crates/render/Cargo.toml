@@ -1,0 +1,13 @@
+[package]
+name = "gugalanna-render"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+gugalanna-layout.workspace = true
+thiserror.workspace = true
+log.workspace = true
+fontdue.workspace = true
+image.workspace = true

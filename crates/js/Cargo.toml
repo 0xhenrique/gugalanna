@@ -1,0 +1,12 @@
+[package]
+name = "gugalanna-js"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+gugalanna-dom.workspace = true
+rquickjs.workspace = true
+thiserror.workspace = true
+log.workspace = true
