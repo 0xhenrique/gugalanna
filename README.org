@@ -1,1 +1,46 @@
 * Gugalanna
+
+This project is ENTIRELY VIBE-CODED using Claude Code as an experiment to see how far AI can go without human intervention.
+
+*Warning:* This browser has zero security considerations. Do not use it for anything real. It exists purely as an exploration of mine.
+
+** Screenshots
+
+[[file:1.png]]
+
+[[file:2.png]]
+
+** What it does
+
+- Fetches and renders web pages (HTTP/HTTPS)
+- Parses HTML5 and CSS
+- Basic JavaScript support via QuickJS
+- Multiple tabs
+
+** Requirements
+
+- Rust toolchain
+- SDL2 development libraries
+- Nix users: ~nix-shell~ will set up everything
+
+** Running
+
+#+begin_src bash
+cargo build
+cargo run -- --file test-pages/colors.html   # Local file
+cargo run -- --render https://example.com    # URL
+cargo run -- --demo                          # Hello World
+#+end_src
+
+** Keyboard shortcuts
+
+| Key              | Action                |
+|------------------+-----------------------|
+| F12              | Toggle DevTools       |
+| Ctrl+T           | New tab               |
+| Ctrl+W           | Close tab             |
+| Ctrl+Tab         | Next tab              |
+| Ctrl+Shift+Tab   | Previous tab          |
+| Ctrl+L           | Focus address bar     |
+| Ctrl+R / F5      | Reload                |
+| Ctrl+Q           | Quit                  |
