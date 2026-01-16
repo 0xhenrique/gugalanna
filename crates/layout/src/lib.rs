@@ -2,22 +2,15 @@
 //!
 //! Box model and layout algorithms.
 
-// TODO: Epic 5 - Layout Engine
-// - Box model
-// - Block layout
-// - Inline layout
-// - Text measurement
+mod boxtree;
+mod block;
+mod inline;
+mod text;
 
-/// A layout box
-#[derive(Debug)]
-pub struct LayoutBox {
-    /// Box dimensions
-    pub dimensions: Dimensions,
-    /// Box type
-    pub box_type: BoxType,
-    /// Child boxes
-    pub children: Vec<LayoutBox>,
-}
+pub use boxtree::{LayoutBox, BoxType, build_layout_tree};
+pub use block::layout_block;
+pub use inline::{LineBox, InlineBox};
+pub use text::TextMetrics;
 
 /// Box dimensions
 #[derive(Debug, Clone, Copy, Default)]
@@ -48,14 +41,6 @@ pub struct EdgeSizes {
     pub right: f32,
     pub bottom: f32,
     pub left: f32,
-}
-
-/// Type of layout box
-#[derive(Debug)]
-pub enum BoxType {
-    Block,
-    Inline,
-    Anonymous,
 }
 
 impl Dimensions {
@@ -95,11 +80,72 @@ impl Dimensions {
             height: padding.height + self.border.top + self.border.bottom,
         }
     }
+
+    /// Get the margin box rectangle
+    pub fn margin_box(&self) -> Rect {
+        let border = self.border_box();
+        Rect {
+            x: border.x - self.margin.left,
+            y: border.y - self.margin.top,
+            width: border.width + self.margin.left + self.margin.right,
+            height: border.height + self.margin.top + self.margin.bottom,
+        }
+    }
 }
 
 impl Rect {
+    /// Create a new rectangle
+    pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self { x, y, width, height }
+    }
+
     /// Check if a point is inside the rectangle
     pub fn contains(&self, x: f32, y: f32) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
+    }
+
+    /// Get the right edge
+    pub fn right(&self) -> f32 {
+        self.x + self.width
+    }
+
+    /// Get the bottom edge
+    pub fn bottom(&self) -> f32 {
+        self.y + self.height
+    }
+}
+
+impl EdgeSizes {
+    /// Create edge sizes with all sides equal
+    pub fn all(size: f32) -> Self {
+        Self {
+            top: size,
+            right: size,
+            bottom: size,
+            left: size,
+        }
+    }
+
+    /// Total horizontal size
+    pub fn horizontal(&self) -> f32 {
+        self.left + self.right
+    }
+
+    /// Total vertical size
+    pub fn vertical(&self) -> f32 {
+        self.top + self.bottom
+    }
+}
+
+/// Containing block for layout
+#[derive(Debug, Clone, Copy)]
+pub struct ContainingBlock {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl ContainingBlock {
+    pub fn new(width: f32, height: f32) -> Self {
+        Self { width, height }
     }
 }

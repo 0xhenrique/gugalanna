@@ -11,3 +11,7 @@ gugalanna-style.workspace = true
 thiserror.workspace = true
 log.workspace = true
 smallvec.workspace = true
+
+[dev-dependencies]
+gugalanna-css.workspace = true
+gugalanna-html.workspace = true
