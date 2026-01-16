@@ -2,14 +2,19 @@
 //!
 //! Style computation, cascade, and selector matching.
 
-// TODO: Epic 4 - Style Computation
-// - Selector matching
-// - Specificity calculation
-// - Cascade algorithm
-// - Inheritance
-// - Computed values
+pub mod matching;
+pub mod cascade;
+pub mod properties;
+pub mod resolver;
+pub mod styletree;
 
 use gugalanna_css::Color;
+
+pub use matching::matches_selector;
+pub use cascade::{Cascade, Origin, MatchedDeclaration, default_ua_stylesheet};
+pub use properties::{Inheritance, is_inherited, get_inheritance};
+pub use resolver::{ResolveContext, StyleResolver};
+pub use styletree::StyleTree;
 
 /// Computed style for an element
 #[derive(Debug, Clone)]
@@ -105,7 +110,7 @@ impl Default for ComputedStyle {
             font_size: 16.0,
             font_family: String::from("sans-serif"),
             font_weight: 400,
-            line_height: 1.2,
+            line_height: 19.2, // 16.0 * 1.2
             text_align: TextAlign::Left,
             position: Position::Static,
             top: None,

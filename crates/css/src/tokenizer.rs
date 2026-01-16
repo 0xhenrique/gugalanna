@@ -483,8 +483,26 @@ impl<'a> Tokenizer<'a> {
                         }
                     } else {
                         // Not a valid exponent, restore position
+                        // We need to rebuild the iterator from the start and skip to saved_pos
+                        // to maintain correct absolute indices
                         self.position = saved_pos;
-                        self.chars = self.input[saved_pos..].char_indices().peekable();
+                        self.chars = self.input.char_indices().peekable();
+                        while let Some(&(pos, _)) = self.chars.peek() {
+                            if pos >= saved_pos {
+                                break;
+                            }
+                            self.chars.next();
+                        }
+                    }
+                } else {
+                    // No digit after e/E and optional sign - not a valid exponent
+                    self.position = saved_pos;
+                    self.chars = self.input.char_indices().peekable();
+                    while let Some(&(pos, _)) = self.chars.peek() {
+                        if pos >= saved_pos {
+                            break;
+                        }
+                        self.chars.next();
                     }
                 }
             }

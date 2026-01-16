@@ -945,4 +945,38 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_first_ua_rule() {
+        // First rule from the UA stylesheet - has many comma-separated selectors
+        let css = "html, address, blockquote, body, dd, div, dl, dt, fieldset, form,
+        frame, frameset, h1, h2, h3, h4, h5, h6, noframes, ol, p, ul, center,
+        dir, hr, menu, pre { display: block; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn test_pseudo_rule() {
+        let css = "a:visited { color: purple; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        assert_eq!(stylesheet.rules.len(), 1);
+    }
+
+    #[test]
+    fn test_ua_partial() {
+        // Using 'em' as selector (which is also a valid HTML element)
+        let css = "em { font-style: italic; } strong { font-weight: bold; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        assert_eq!(stylesheet.rules.len(), 2);
+    }
+
+    #[test]
+    fn test_em_dimension_two_rules() {
+        // Specifically testing the em dimension issue
+        let css = "a { width: 2em; } b { width: 3em; }";
+        let stylesheet = Stylesheet::parse(css).unwrap();
+        assert_eq!(stylesheet.rules.len(), 2);
+    }
 }
+

@@ -12,3 +12,6 @@ thiserror.workspace = true
 log.workspace = true
 smallvec.workspace = true
 rustc-hash.workspace = true
+
+[dev-dependencies]
+gugalanna-html.workspace = true
