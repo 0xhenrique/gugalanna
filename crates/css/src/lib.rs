@@ -31,3 +31,17 @@ pub use parser::{
     ImportRule, MediaRule, FontFaceRule, KeyframesRule, Keyframe,
     CssParser,
 };
+
+/// Parse inline style declarations from a style attribute value.
+///
+/// # Example
+/// ```
+/// use gugalanna_css::parse_inline_style;
+///
+/// let declarations = parse_inline_style("color: red; font-size: 16px;").unwrap();
+/// assert_eq!(declarations.len(), 2);
+/// ```
+pub fn parse_inline_style(style: &str) -> CssResult<Vec<Declaration>> {
+    let mut parser = CssParser::new(style);
+    parser.parse_inline_style()
+}

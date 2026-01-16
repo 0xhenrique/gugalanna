@@ -146,6 +146,41 @@ impl<'a> LayoutBox<'a> {
     }
 }
 
+/// Collapse whitespace in text according to CSS rules
+/// - Multiple whitespace characters become a single space
+/// - Preserves a single space at start/end if there was any whitespace
+fn collapse_whitespace(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    // Check for leading/trailing whitespace
+    let has_leading_space = text.starts_with(char::is_whitespace);
+    let has_trailing_space = text.ends_with(char::is_whitespace);
+
+    // Split on whitespace and rejoin with single spaces
+    let words: Vec<&str> = text.split_whitespace().collect();
+
+    if words.is_empty() {
+        // All whitespace - collapse to single space
+        return " ".to_string();
+    }
+
+    let mut result = String::new();
+
+    if has_leading_space {
+        result.push(' ');
+    }
+
+    result.push_str(&words.join(" "));
+
+    if has_trailing_space {
+        result.push(' ');
+    }
+
+    result
+}
+
 /// Build a layout tree from DOM and style tree
 pub fn build_layout_tree<'a>(
     dom: &DomTree,
@@ -216,14 +251,17 @@ fn build_children<'a>(
         } else if node.is_text() {
             // Text node - create text box
             if let Some(text) = node.as_text() {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
+                // Collapse whitespace according to CSS rules:
+                // - Multiple whitespace → single space
+                // - Preserve leading/trailing space if present (important for inline flow)
+                let collapsed = collapse_whitespace(text);
+                if !collapsed.is_empty() {
                     // Inherit style from parent element
                     // Walk up to find nearest element with style
                     if let Some(parent_style) = find_parent_style(dom, style_tree, parent_id) {
                         let text_box = LayoutBox::new_text(
                             child_id,
-                            trimmed.to_string(),
+                            collapsed,
                             parent_style,
                         );
                         let container = parent_box.get_inline_container();
@@ -338,5 +376,38 @@ mod tests {
         assert!(layout.is_block());
         // Inline content should be wrapped or direct child
         assert!(!layout.children.is_empty());
+    }
+
+    #[test]
+    fn test_collapse_whitespace_basic() {
+        assert_eq!(collapse_whitespace("hello"), "hello");
+        assert_eq!(collapse_whitespace("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_collapse_whitespace_multiple_spaces() {
+        assert_eq!(collapse_whitespace("hello    world"), "hello world");
+        assert_eq!(collapse_whitespace("a   b   c"), "a b c");
+    }
+
+    #[test]
+    fn test_collapse_whitespace_preserves_leading_trailing() {
+        // Leading space preserved
+        assert_eq!(collapse_whitespace(" hello"), " hello");
+        // Trailing space preserved
+        assert_eq!(collapse_whitespace("hello "), "hello ");
+        // Both preserved
+        assert_eq!(collapse_whitespace(" hello "), " hello ");
+    }
+
+    #[test]
+    fn test_collapse_whitespace_only_whitespace() {
+        assert_eq!(collapse_whitespace("   "), " ");
+        assert_eq!(collapse_whitespace("\t\n"), " ");
+    }
+
+    #[test]
+    fn test_collapse_whitespace_empty() {
+        assert_eq!(collapse_whitespace(""), "");
     }
 }

@@ -165,6 +165,27 @@ impl<'a> CssParser<'a> {
         Ok(Stylesheet { rules })
     }
 
+    /// Parse inline style declarations (without braces)
+    /// Used for parsing the `style` attribute on HTML elements.
+    pub fn parse_inline_style(&mut self) -> CssResult<Vec<Declaration>> {
+        let mut declarations = Vec::new();
+
+        loop {
+            self.skip_whitespace()?;
+
+            match self.peek() {
+                None | Some(Token::Eof) => break,
+                _ => {
+                    if let Some(decl) = self.parse_declaration()? {
+                        declarations.push(decl);
+                    }
+                }
+            }
+        }
+
+        Ok(declarations)
+    }
+
     /// Parse an at-rule
     fn parse_at_rule(&mut self) -> CssResult<Option<Rule>> {
         let name = match self.advance()? {

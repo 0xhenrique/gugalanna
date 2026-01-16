@@ -3,7 +3,7 @@
 //! Implements the CSS cascade algorithm for determining
 //! which declarations apply to an element.
 
-use gugalanna_css::{Stylesheet, Rule, StyleRule, Declaration, Specificity};
+use gugalanna_css::{Stylesheet, Rule, StyleRule, Declaration, Specificity, parse_inline_style};
 use gugalanna_dom::{DomTree, NodeId};
 
 use crate::matching::matches_selector;
@@ -156,6 +156,20 @@ impl Cascade {
             );
         }
 
+        // Collect inline styles from the element's style attribute
+        // Inline styles have specificity (1,0,0,0) - higher than any selector
+        if let Some(node) = tree.get(element_id) {
+            if let Some(element) = node.as_element() {
+                if let Some(style_attr) = element.get_attribute("style") {
+                    self.collect_inline_style_declarations(
+                        style_attr,
+                        &mut source_order,
+                        &mut declarations,
+                    );
+                }
+            }
+        }
+
         // Sort by cascade priority (stable sort preserves source order for equal priority)
         declarations.sort_by(|a, b| {
             if a.overrides(b) {
@@ -242,6 +256,31 @@ impl Cascade {
                     declaration: decl.clone(),
                     origin,
                     specificity,
+                    source_order: *source_order,
+                });
+                *source_order += 1;
+            }
+        }
+    }
+
+    /// Collect declarations from inline style attribute
+    fn collect_inline_style_declarations(
+        &self,
+        style_attr: &str,
+        source_order: &mut u32,
+        declarations: &mut Vec<MatchedDeclaration>,
+    ) {
+        // Parse the inline style
+        if let Ok(decls) = parse_inline_style(style_attr) {
+            // Inline styles have highest specificity - use 1000 for 'a' component
+            // (regular selectors have a max of ~100 or so for deeply nested IDs)
+            let inline_specificity = Specificity::new(1000, 0, 0);
+
+            for decl in decls {
+                declarations.push(MatchedDeclaration {
+                    declaration: decl,
+                    origin: Origin::Author,
+                    specificity: inline_specificity,
                     source_order: *source_order,
                 });
                 *source_order += 1;
