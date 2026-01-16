@@ -3,7 +3,7 @@
 //! Converts layout tree to paint commands.
 
 use gugalanna_dom::NodeId;
-use gugalanna_layout::{LayoutBox, BoxType, InputType, Rect};
+use gugalanna_layout::{LayoutBox, BoxType, InputType, ImagePixels, Rect};
 
 use crate::paint::RenderColor;
 
@@ -64,6 +64,14 @@ pub enum PaintCommand {
         rect: Rect,
         text: String,
         is_pressed: bool,
+    },
+    /// Draw an image
+    DrawImage {
+        rect: Rect,
+        /// Decoded RGBA pixel data (None if not loaded or failed)
+        pixels: Option<ImagePixels>,
+        /// Alt text for placeholder display
+        alt: String,
     },
 }
 
@@ -262,6 +270,16 @@ fn render_content(list: &mut DisplayList, layout_box: &LayoutBox, abs_x: f32, ab
                 rect,
                 text: label.clone(),
                 is_pressed: false,
+            });
+        }
+        BoxType::Image(_, ref image_data, _) => {
+            let d = &layout_box.dimensions;
+            let rect = Rect::new(abs_x, abs_y, d.content.width, d.content.height);
+
+            list.push(PaintCommand::DrawImage {
+                rect,
+                pixels: image_data.pixels.clone(),
+                alt: image_data.alt.clone(),
             });
         }
         _ => {}

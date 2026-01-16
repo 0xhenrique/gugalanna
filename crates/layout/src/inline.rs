@@ -2,9 +2,10 @@
 //!
 //! Implements inline formatting context and line box layout.
 
-use crate::boxtree::{LayoutBox, BoxType, InputType};
+use crate::boxtree::{LayoutBox, BoxType, InputType, ImageData};
 use crate::text::measure_text;
 use crate::Rect;
+use gugalanna_style::ComputedStyle;
 
 /// A line box containing inline content
 #[derive(Debug)]
@@ -162,6 +163,23 @@ fn layout_inline_box(layout_box: &mut LayoutBox, _available_width: f32) -> (f32,
                 layout_box.dimensions.margin_box_height(),
             )
         }
+        BoxType::Image(_, ref image_data, _) => {
+            // Image element with intrinsic dimensions
+            // Clone image_data reference before mutable borrow
+            let image_data = image_data.clone();
+            layout_box.apply_style_edges();
+
+            let style = layout_box.style().unwrap();
+            let (width, height) = compute_image_dimensions(style, &image_data);
+
+            layout_box.dimensions.content.width = width;
+            layout_box.dimensions.content.height = height;
+
+            (
+                layout_box.dimensions.margin_box_width(),
+                layout_box.dimensions.margin_box_height(),
+            )
+        }
     }
 }
 
@@ -183,6 +201,61 @@ fn input_intrinsic_size(input_type: InputType) -> (f32, f32) {
         InputType::Hidden => {
             // Hidden inputs have no size
             (0.0, 0.0)
+        }
+    }
+}
+
+/// Compute image dimensions based on CSS, attributes, and intrinsic size
+/// Priority: CSS > HTML attributes > intrinsic (from decoded image) > placeholder (300x150)
+fn compute_image_dimensions(style: &ComputedStyle, image_data: &ImageData) -> (f32, f32) {
+    const PLACEHOLDER_WIDTH: f32 = 300.0;
+    const PLACEHOLDER_HEIGHT: f32 = 150.0;
+
+    // Get intrinsic dimensions from decoded pixels or HTML attributes
+    let intrinsic_width = image_data.pixels.as_ref()
+        .map(|p| p.width as f32)
+        .or(image_data.intrinsic_width);
+    let intrinsic_height = image_data.pixels.as_ref()
+        .map(|p| p.height as f32)
+        .or(image_data.intrinsic_height);
+
+    // Calculate aspect ratio if we have both dimensions
+    let aspect_ratio = match (intrinsic_width, intrinsic_height) {
+        (Some(w), Some(h)) if h > 0.0 => Some(w / h),
+        _ => None,
+    };
+
+    // CSS width/height are Option<f32>
+    let css_width = style.width;
+    let css_height = style.height;
+
+    match (css_width, css_height) {
+        // Both CSS dimensions specified
+        (Some(w), Some(h)) => (w, h),
+
+        // Only width specified - calculate height from aspect ratio
+        (Some(w), None) => {
+            let h = aspect_ratio
+                .map(|ar| w / ar)
+                .or(intrinsic_height)
+                .unwrap_or(PLACEHOLDER_HEIGHT);
+            (w, h)
+        }
+
+        // Only height specified - calculate width from aspect ratio
+        (None, Some(h)) => {
+            let w = aspect_ratio
+                .map(|ar| h * ar)
+                .or(intrinsic_width)
+                .unwrap_or(PLACEHOLDER_WIDTH);
+            (w, h)
+        }
+
+        // No CSS dimensions - use intrinsic or placeholder
+        (None, None) => {
+            let w = intrinsic_width.unwrap_or(PLACEHOLDER_WIDTH);
+            let h = intrinsic_height.unwrap_or(PLACEHOLDER_HEIGHT);
+            (w, h)
         }
     }
 }

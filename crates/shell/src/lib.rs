@@ -5,6 +5,7 @@
 mod chrome;
 mod event;
 mod form;
+mod image_loader;
 mod loading;
 mod navigation;
 
@@ -603,6 +604,9 @@ impl Browser {
             Some(tree) => tree,
             None => return Err("Failed to build layout tree".into()),
         };
+
+        // Load images (before layout so intrinsic dimensions are available)
+        image_loader::load_images_in_tree(&mut layout_tree, &self.http_client, &url);
 
         // Perform layout
         layout_block(
@@ -2060,6 +2064,36 @@ impl Browser {
                         is_pressed: *is_pressed,
                     });
                 }
+                PaintCommand::DrawImage { rect, pixels, alt } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+
+                    // Clip to chrome area
+                    let mut clipped_y = new_y;
+                    let mut clipped_height = rect.height;
+                    if clipped_y < CHROME_HEIGHT {
+                        let clip_amount = CHROME_HEIGHT - clipped_y;
+                        clipped_y = CHROME_HEIGHT;
+                        clipped_height -= clip_amount;
+                        if clipped_height <= 0.0 {
+                            continue;
+                        }
+                    }
+
+                    offset_commands.push(PaintCommand::DrawImage {
+                        rect: Rect {
+                            x: rect.x,
+                            y: clipped_y,
+                            width: rect.width,
+                            height: clipped_height,
+                        },
+                        pixels: pixels.clone(),
+                        alt: alt.clone(),
+                    });
+                }
             }
         }
 
@@ -2091,6 +2125,7 @@ fn build_hit_regions_recursive(layout: &LayoutBox, regions: &mut Vec<HitRegion>,
         BoxType::Text(id, _, _) => Some(id.0),
         BoxType::Input(id, _, _) => Some(id.0),
         BoxType::Button(id, _, _) => Some(id.0),
+        BoxType::Image(id, _, _) => Some(id.0),
         BoxType::AnonymousBlock | BoxType::AnonymousInline => None,
     };
 

@@ -21,3 +21,4 @@ thiserror.workspace = true
 log.workspace = true
 url.workspace = true
 rustc-hash.workspace = true
+image.workspace = true

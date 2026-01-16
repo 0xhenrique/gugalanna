@@ -369,6 +369,103 @@ impl SdlBackend {
         let text_y = rect.y + (rect.height - 14.0) / 2.0;
         self.draw_text(text, text_x, text_y, RenderColor::black(), 14.0);
     }
+
+    /// Draw an image
+    fn draw_image(
+        &mut self,
+        rect: &gugalanna_layout::Rect,
+        pixels: Option<&gugalanna_layout::ImagePixels>,
+        alt: &str,
+    ) {
+        // Check if we have valid image data first
+        let img = match pixels {
+            Some(img) if img.width > 0 && img.height > 0 && !img.data.is_empty() => img,
+            _ => {
+                // No valid image data - draw placeholder
+                self.draw_image_placeholder(rect, alt);
+                return;
+            }
+        };
+
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width as u32;
+        let h = rect.height as u32;
+
+        // Try to render the image, track if we need to show placeholder
+        let render_success = self.try_render_image_texture(img, x, y, w, h);
+
+        if !render_success {
+            self.draw_image_placeholder(rect, alt);
+        }
+    }
+
+    /// Try to render image pixels as a texture, returns true on success
+    fn try_render_image_texture(
+        &mut self,
+        img: &gugalanna_layout::ImagePixels,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+    ) -> bool {
+        // Create texture from pixel data
+        let mut texture = match self.texture_creator.create_texture_streaming(
+            PixelFormatEnum::RGBA32,
+            img.width,
+            img.height,
+        ) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+
+        // Enable alpha blending
+        texture.set_blend_mode(BlendMode::Blend);
+
+        // Update texture with pixel data
+        let pitch = (img.width * 4) as usize;
+        if texture.update(None, &img.data, pitch).is_err() {
+            return false;
+        }
+
+        // Copy texture to canvas, scaling to fit the layout rect
+        let dst_rect = SdlRect::new(x, y, w, h);
+        self.canvas.copy(&texture, None, dst_rect).is_ok()
+    }
+
+    /// Draw a placeholder for failed/loading images
+    fn draw_image_placeholder(&mut self, rect: &gugalanna_layout::Rect, alt: &str) {
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width as u32;
+        let h = rect.height as u32;
+
+        // Light gray background
+        self.draw_rect(x, y, w, h, RenderColor::rgb(240, 240, 240));
+
+        // Border
+        self.draw_border(
+            rect.x, rect.y, rect.width, rect.height,
+            1.0, 1.0, 1.0, 1.0,
+            RenderColor::rgb(200, 200, 200),
+        );
+
+        // Alt text (truncated if too long)
+        if !alt.is_empty() {
+            let text = if alt.len() > 30 {
+                format!("{}...", &alt[..27])
+            } else {
+                alt.to_string()
+            };
+
+            // Center the text
+            let text_width = text.len() as f32 * 7.0;
+            let text_x = rect.x + (rect.width - text_width).max(0.0) / 2.0;
+            let text_y = rect.y + (rect.height - 14.0).max(0.0) / 2.0;
+
+            self.draw_text(&text, text_x.max(rect.x + 4.0), text_y.max(rect.y + 4.0), RenderColor::rgb(128, 128, 128), 14.0);
+        }
+    }
 }
 
 impl RenderBackend for SdlBackend {
@@ -416,6 +513,9 @@ impl RenderBackend for SdlBackend {
                 }
                 PaintCommand::DrawButton { rect, text, is_pressed, .. } => {
                     self.draw_button(rect, text, *is_pressed);
+                }
+                PaintCommand::DrawImage { rect, pixels, alt } => {
+                    self.draw_image(rect, pixels.as_ref(), alt);
                 }
             }
         }

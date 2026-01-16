@@ -57,6 +57,32 @@ impl InputType {
     }
 }
 
+/// Data for an image element
+#[derive(Debug, Clone)]
+pub struct ImageData {
+    /// Image source URL
+    pub src: String,
+    /// Intrinsic width from decoded image or HTML attribute
+    pub intrinsic_width: Option<f32>,
+    /// Intrinsic height from decoded image or HTML attribute
+    pub intrinsic_height: Option<f32>,
+    /// Alt text for accessibility and placeholder display
+    pub alt: String,
+    /// Decoded RGBA pixel data (None if not yet loaded or failed)
+    pub pixels: Option<ImagePixels>,
+}
+
+/// Decoded image pixel data
+#[derive(Debug, Clone)]
+pub struct ImagePixels {
+    /// Image width in pixels
+    pub width: u32,
+    /// Image height in pixels
+    pub height: u32,
+    /// RGBA pixel data, 4 bytes per pixel
+    pub data: Vec<u8>,
+}
+
 /// Type of layout box
 #[derive(Debug)]
 pub enum BoxType<'a> {
@@ -74,6 +100,8 @@ pub enum BoxType<'a> {
     Input(NodeId, InputType, &'a ComputedStyle),
     /// Button element
     Button(NodeId, String, &'a ComputedStyle),
+    /// Image element (replaced element with intrinsic size)
+    Image(NodeId, ImageData, &'a ComputedStyle),
 }
 
 impl<'a> LayoutBox<'a> {
@@ -122,6 +150,15 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
+    /// Create a new image box
+    pub fn new_image(node_id: NodeId, image_data: ImageData, style: &'a ComputedStyle) -> Self {
+        Self {
+            dimensions: Dimensions::default(),
+            box_type: BoxType::Image(node_id, image_data, style),
+            children: Vec::new(),
+        }
+    }
+
     /// Create an anonymous block box
     pub fn new_anonymous_block() -> Self {
         Self {
@@ -139,6 +176,7 @@ impl<'a> LayoutBox<'a> {
             BoxType::Text(_, _, style) => Some(style),
             BoxType::Input(_, _, style) => Some(style),
             BoxType::Button(_, _, style) => Some(style),
+            BoxType::Image(_, _, style) => Some(style),
             BoxType::AnonymousBlock | BoxType::AnonymousInline => None,
         }
     }
@@ -151,6 +189,7 @@ impl<'a> LayoutBox<'a> {
             BoxType::Text(id, _, _) => Some(*id),
             BoxType::Input(id, _, _) => Some(*id),
             BoxType::Button(id, _, _) => Some(*id),
+            BoxType::Image(id, _, _) => Some(*id),
             BoxType::AnonymousBlock | BoxType::AnonymousInline => None,
         }
     }
@@ -165,7 +204,7 @@ impl<'a> LayoutBox<'a> {
         matches!(
             self.box_type,
             BoxType::Inline(_, _) | BoxType::Text(_, _, _) | BoxType::AnonymousInline
-                | BoxType::Input(_, _, _) | BoxType::Button(_, _, _)
+                | BoxType::Input(_, _, _) | BoxType::Button(_, _, _) | BoxType::Image(_, _, _)
         )
     }
 
@@ -315,6 +354,28 @@ fn build_children<'a>(
                             let label = if label.is_empty() { "Button".to_string() } else { label };
 
                             let child_box = LayoutBox::new_button(child_id, label, child_style);
+                            let container = parent_box.get_inline_container();
+                            container.children.push(child_box);
+                            continue;
+                        }
+                        "img" => {
+                            // Get image attributes
+                            let src = elem.get_attribute("src").unwrap_or("").to_string();
+                            let alt = elem.get_attribute("alt").unwrap_or("").to_string();
+                            let attr_width = elem.get_attribute("width")
+                                .and_then(|s| s.parse::<f32>().ok());
+                            let attr_height = elem.get_attribute("height")
+                                .and_then(|s| s.parse::<f32>().ok());
+
+                            let image_data = ImageData {
+                                src,
+                                intrinsic_width: attr_width,
+                                intrinsic_height: attr_height,
+                                alt,
+                                pixels: None,
+                            };
+
+                            let child_box = LayoutBox::new_image(child_id, image_data, child_style);
                             let container = parent_box.get_inline_container();
                             container.children.push(child_box);
                             continue;
