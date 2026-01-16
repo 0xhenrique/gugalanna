@@ -71,9 +71,14 @@ pub const SCANCODE_RIGHT: u32 = 79;
 // Letter keys
 pub const SCANCODE_L: u32 = 15;
 pub const SCANCODE_R: u32 = 21;
+pub const SCANCODE_T: u32 = 23;
+pub const SCANCODE_W: u32 = 26;
 
 // Function keys
 pub const SCANCODE_F5: u32 = 62;
+
+// Tab key
+pub const SCANCODE_TAB: u32 = 43;
 
 // SDL keyboard modifier masks
 const KMOD_CTRL: u16 = 0x00C0;

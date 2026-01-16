@@ -1,12 +1,20 @@
 //! Browser chrome UI components
 //!
-//! Address bar, navigation buttons, and browser chrome rendering.
+//! Address bar, navigation buttons, tab bar, and browser chrome rendering.
 
 use gugalanna_layout::Rect;
 use gugalanna_render::{DisplayList, PaintCommand, RenderColor};
 
-/// Browser chrome height in pixels
-pub const CHROME_HEIGHT: f32 = 48.0;
+use crate::TabId;
+
+/// Tab bar height in pixels
+pub const TAB_BAR_HEIGHT: f32 = 32.0;
+
+/// Navigation bar height in pixels
+const NAV_BAR_HEIGHT: f32 = 48.0;
+
+/// Total browser chrome height in pixels (tab bar + nav bar)
+pub const CHROME_HEIGHT: f32 = TAB_BAR_HEIGHT + NAV_BAR_HEIGHT;
 
 /// Padding around chrome elements
 const PADDING: f32 = 8.0;
@@ -17,6 +25,53 @@ const BUTTON_WIDTH: f32 = 32.0;
 /// Button height
 const BUTTON_HEIGHT: f32 = 32.0;
 
+/// Maximum tab width
+const TAB_MAX_WIDTH: f32 = 200.0;
+
+/// Minimum tab width
+const TAB_MIN_WIDTH: f32 = 100.0;
+
+/// Tab close button size
+const TAB_CLOSE_SIZE: f32 = 16.0;
+
+/// New tab button width
+const NEW_TAB_BUTTON_WIDTH: f32 = 28.0;
+
+/// Visual tab in tab bar
+#[derive(Debug, Clone)]
+pub struct Tab {
+    /// Tab identifier
+    pub id: TabId,
+    /// Tab bounds
+    pub rect: Rect,
+    /// Close button bounds
+    pub close_rect: Rect,
+    /// Tab title
+    pub title: String,
+    /// Whether this tab is active
+    pub is_active: bool,
+    /// Whether this tab is loading
+    pub is_loading: bool,
+}
+
+impl Tab {
+    /// Check if a point is within the tab bounds (excluding close button)
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.rect.x
+            && x <= self.rect.x + self.rect.width
+            && y >= self.rect.y
+            && y <= self.rect.y + self.rect.height
+    }
+
+    /// Check if a point is within the close button bounds
+    pub fn close_contains(&self, x: f32, y: f32) -> bool {
+        x >= self.close_rect.x
+            && x <= self.close_rect.x + self.close_rect.width
+            && y >= self.close_rect.y
+            && y <= self.close_rect.y + self.close_rect.height
+    }
+}
+
 /// Browser chrome UI state
 #[derive(Debug)]
 pub struct Chrome {
@@ -24,6 +79,10 @@ pub struct Chrome {
     pub height: f32,
     /// Window width
     width: f32,
+    /// Visual tabs in tab bar
+    pub tabs: Vec<Tab>,
+    /// New tab button
+    pub new_tab_button: Button,
     /// Back button
     pub back_button: Button,
     /// Forward button
@@ -65,22 +124,33 @@ pub struct AddressBar {
 /// Result of hit testing the chrome
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromeHit {
+    /// A tab was clicked (but not its close button)
+    Tab(TabId),
+    /// A tab's close button was clicked
+    TabClose(TabId),
+    /// The new tab button was clicked
+    NewTab,
+    /// Back button clicked
     BackButton,
+    /// Forward button clicked
     ForwardButton,
+    /// Go button clicked
     GoButton,
+    /// Address bar clicked
     AddressBar,
 }
 
 impl Chrome {
     /// Create a new chrome instance
     pub fn new(window_width: f32) -> Self {
-        let y_center = CHROME_HEIGHT / 2.0 - BUTTON_HEIGHT / 2.0;
+        // Navigation bar Y position (below tab bar)
+        let nav_y_center = TAB_BAR_HEIGHT + NAV_BAR_HEIGHT / 2.0 - BUTTON_HEIGHT / 2.0;
 
         // Back button: [<]
         let back_button = Button {
             rect: Rect {
                 x: PADDING,
-                y: y_center,
+                y: nav_y_center,
                 width: BUTTON_WIDTH,
                 height: BUTTON_HEIGHT,
             },
@@ -92,7 +162,7 @@ impl Chrome {
         let forward_button = Button {
             rect: Rect {
                 x: PADDING + BUTTON_WIDTH + PADDING,
-                y: y_center,
+                y: nav_y_center,
                 width: BUTTON_WIDTH,
                 height: BUTTON_HEIGHT,
             },
@@ -104,7 +174,7 @@ impl Chrome {
         let go_button = Button {
             rect: Rect {
                 x: window_width - PADDING - BUTTON_WIDTH,
-                y: y_center,
+                y: nav_y_center,
                 width: BUTTON_WIDTH,
                 height: BUTTON_HEIGHT,
             },
@@ -119,7 +189,7 @@ impl Chrome {
         let address_bar = AddressBar {
             rect: Rect {
                 x: address_bar_x,
-                y: y_center,
+                y: nav_y_center,
                 width: address_bar_width,
                 height: BUTTON_HEIGHT,
             },
@@ -128,9 +198,23 @@ impl Chrome {
             is_focused: false,
         };
 
+        // New tab button (positioned after tabs, will be updated by layout_tabs)
+        let new_tab_button = Button {
+            rect: Rect {
+                x: PADDING,
+                y: (TAB_BAR_HEIGHT - BUTTON_HEIGHT) / 2.0,
+                width: NEW_TAB_BUTTON_WIDTH,
+                height: BUTTON_HEIGHT - 4.0,
+            },
+            label: "+",
+            enabled: true,
+        };
+
         Self {
             height: CHROME_HEIGHT,
             width: window_width,
+            tabs: Vec::new(),
+            new_tab_button,
             back_button,
             forward_button,
             address_bar,
@@ -138,6 +222,61 @@ impl Chrome {
             is_loading: false,
             loading_frame: 0,
         }
+    }
+
+    /// Update tab layout from tab state
+    ///
+    /// Call this when tabs are added, removed, or switched.
+    pub fn layout_tabs(&mut self, tab_infos: &[(TabId, String, bool, bool)], active_id: TabId) {
+        // tab_infos: [(id, title, is_loading, is_active)]
+        self.tabs.clear();
+
+        let tab_count = tab_infos.len();
+        if tab_count == 0 {
+            // Position new tab button at start
+            self.new_tab_button.rect.x = PADDING;
+            return;
+        }
+
+        // Calculate tab width
+        let available_width = self.width - PADDING * 2.0 - NEW_TAB_BUTTON_WIDTH - PADDING;
+        let mut tab_width = available_width / tab_count as f32;
+        tab_width = tab_width.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH);
+
+        let tab_height = TAB_BAR_HEIGHT - 4.0;
+        let tab_y = 2.0;
+
+        let mut x = PADDING;
+        for (id, title, is_loading, _) in tab_infos {
+            let is_active = *id == active_id;
+
+            let close_x = x + tab_width - TAB_CLOSE_SIZE - 4.0;
+            let close_y = tab_y + (tab_height - TAB_CLOSE_SIZE) / 2.0;
+
+            self.tabs.push(Tab {
+                id: *id,
+                rect: Rect {
+                    x,
+                    y: tab_y,
+                    width: tab_width,
+                    height: tab_height,
+                },
+                close_rect: Rect {
+                    x: close_x,
+                    y: close_y,
+                    width: TAB_CLOSE_SIZE,
+                    height: TAB_CLOSE_SIZE,
+                },
+                title: truncate_title(title, (tab_width - TAB_CLOSE_SIZE - 16.0) / 7.0),
+                is_active,
+                is_loading: *is_loading,
+            });
+
+            x += tab_width;
+        }
+
+        // Position new tab button after last tab
+        self.new_tab_button.rect.x = x + PADDING / 2.0;
     }
 
     /// Update loading animation (call each frame when loading)
@@ -153,18 +292,48 @@ impl Chrome {
     pub fn build_display_list(&self) -> DisplayList {
         let mut commands = Vec::new();
 
-        // Chrome background
+        // Tab bar background
         commands.push(PaintCommand::FillRect {
             rect: Rect {
                 x: 0.0,
                 y: 0.0,
                 width: self.width,
-                height: self.height,
+                height: TAB_BAR_HEIGHT,
+            },
+            color: RenderColor::new(230, 230, 230, 255), // Slightly darker gray
+        });
+
+        // Render tabs
+        for tab in &self.tabs {
+            self.render_tab(tab, &mut commands);
+        }
+
+        // New tab button
+        self.render_new_tab_button(&mut commands);
+
+        // Tab bar bottom border
+        commands.push(PaintCommand::FillRect {
+            rect: Rect {
+                x: 0.0,
+                y: TAB_BAR_HEIGHT - 1.0,
+                width: self.width,
+                height: 1.0,
+            },
+            color: RenderColor::new(200, 200, 200, 255),
+        });
+
+        // Navigation bar background
+        commands.push(PaintCommand::FillRect {
+            rect: Rect {
+                x: 0.0,
+                y: TAB_BAR_HEIGHT,
+                width: self.width,
+                height: NAV_BAR_HEIGHT,
             },
             color: RenderColor::new(240, 240, 240, 255), // Light gray
         });
 
-        // Bottom border
+        // Chrome bottom border
         commands.push(PaintCommand::FillRect {
             rect: Rect {
                 x: 0.0,
@@ -206,6 +375,114 @@ impl Chrome {
         self.render_button(&self.go_button, &mut commands);
 
         DisplayList { commands }
+    }
+
+    /// Render a tab
+    fn render_tab(&self, tab: &Tab, commands: &mut Vec<PaintCommand>) {
+        // Tab background
+        let bg_color = if tab.is_active {
+            RenderColor::new(255, 255, 255, 255) // White for active
+        } else {
+            RenderColor::new(220, 220, 220, 255) // Gray for inactive
+        };
+
+        commands.push(PaintCommand::FillRect {
+            rect: tab.rect,
+            color: bg_color,
+        });
+
+        // Tab border (only sides and top for active tab)
+        if tab.is_active {
+            commands.push(PaintCommand::DrawBorder {
+                rect: tab.rect,
+                widths: gugalanna_render::BorderWidths {
+                    top: 1.0,
+                    right: 1.0,
+                    bottom: 0.0,
+                    left: 1.0,
+                },
+                color: RenderColor::new(180, 180, 180, 255),
+            });
+        } else {
+            commands.push(PaintCommand::DrawBorder {
+                rect: tab.rect,
+                widths: gugalanna_render::BorderWidths {
+                    top: 1.0,
+                    right: 1.0,
+                    bottom: 1.0,
+                    left: 1.0,
+                },
+                color: RenderColor::new(200, 200, 200, 255),
+            });
+        }
+
+        // Tab title
+        let text_x = tab.rect.x + 8.0;
+        let text_y = tab.rect.y + tab.rect.height / 2.0 - 6.0;
+        let text_color = if tab.is_active {
+            RenderColor::new(0, 0, 0, 255)
+        } else {
+            RenderColor::new(80, 80, 80, 255)
+        };
+
+        // Loading indicator or title
+        let display_text = if tab.is_loading {
+            let spinner = ['|', '/', '-', '\\'];
+            let frame = (self.loading_frame / 8) as usize % 4;
+            format!("{} {}", spinner[frame], &tab.title)
+        } else {
+            tab.title.clone()
+        };
+
+        commands.push(PaintCommand::DrawText {
+            text: display_text,
+            x: text_x,
+            y: text_y,
+            color: text_color,
+            font_size: 12.0,
+        });
+
+        // Close button (X)
+        commands.push(PaintCommand::DrawText {
+            text: "x".to_string(),
+            x: tab.close_rect.x + 4.0,
+            y: tab.close_rect.y + 2.0,
+            color: RenderColor::new(120, 120, 120, 255),
+            font_size: 12.0,
+        });
+    }
+
+    /// Render the new tab button
+    fn render_new_tab_button(&self, commands: &mut Vec<PaintCommand>) {
+        // Button background
+        commands.push(PaintCommand::FillRect {
+            rect: self.new_tab_button.rect,
+            color: RenderColor::new(220, 220, 220, 255),
+        });
+
+        // Button border
+        commands.push(PaintCommand::DrawBorder {
+            rect: self.new_tab_button.rect,
+            widths: gugalanna_render::BorderWidths {
+                top: 1.0,
+                right: 1.0,
+                bottom: 1.0,
+                left: 1.0,
+            },
+            color: RenderColor::new(180, 180, 180, 255),
+        });
+
+        // Plus sign
+        let text_x = self.new_tab_button.rect.x + self.new_tab_button.rect.width / 2.0 - 4.0;
+        let text_y = self.new_tab_button.rect.y + self.new_tab_button.rect.height / 2.0 - 6.0;
+
+        commands.push(PaintCommand::DrawText {
+            text: "+".to_string(),
+            x: text_x,
+            y: text_y,
+            color: RenderColor::new(80, 80, 80, 255),
+            font_size: 14.0,
+        });
     }
 
     /// Render a button
@@ -280,13 +557,14 @@ impl Chrome {
             color: border_color,
         });
 
-        // Address bar text
+        // Address bar text (truncated to fit)
         let text_x = self.address_bar.rect.x + 8.0;
         let text_y = self.address_bar.rect.y + self.address_bar.rect.height / 2.0 - 6.0;
 
         if !self.address_bar.text.is_empty() {
+            let display_text = self.address_bar.truncated_display_text();
             commands.push(PaintCommand::DrawText {
-                text: self.address_bar.text.clone(),
+                text: display_text,
                 x: text_x,
                 y: text_y,
                 color: RenderColor::new(0, 0, 0, 255),
@@ -296,8 +574,11 @@ impl Chrome {
 
         // Cursor when focused
         if self.address_bar.is_focused {
-            // Simple cursor at end of text (approximate position)
+            // Simple cursor at cursor position (approximate)
             let cursor_x = text_x + (self.address_bar.cursor_pos as f32 * 8.0);
+            let max_cursor_x = self.address_bar.rect.x + self.address_bar.rect.width - 8.0;
+            let cursor_x = cursor_x.min(max_cursor_x);
+
             commands.push(PaintCommand::FillRect {
                 rect: Rect {
                     x: cursor_x,
@@ -319,6 +600,27 @@ impl Chrome {
             return None;
         }
 
+        // Tab bar area
+        if y < TAB_BAR_HEIGHT {
+            // Check new tab button first
+            if self.new_tab_button.contains(x, y) {
+                return Some(ChromeHit::NewTab);
+            }
+
+            // Check tabs (check close button first for each tab)
+            for tab in &self.tabs {
+                if tab.close_contains(x, y) {
+                    return Some(ChromeHit::TabClose(tab.id));
+                }
+                if tab.contains(x, y) {
+                    return Some(ChromeHit::Tab(tab.id));
+                }
+            }
+
+            return None;
+        }
+
+        // Navigation bar area
         if self.back_button.contains(x, y) {
             return Some(ChromeHit::BackButton);
         }
@@ -377,6 +679,20 @@ impl AddressBar {
             && y <= self.rect.y + self.rect.height
     }
 
+    /// Get truncated display text that fits in the address bar
+    pub fn truncated_display_text(&self) -> String {
+        let available_width = self.rect.width - 16.0; // padding on both sides
+        let max_chars = (available_width / 8.0) as usize; // approximate char width
+
+        if self.text.len() <= max_chars {
+            self.text.clone()
+        } else if max_chars > 3 {
+            format!("{}...", &self.text[..max_chars - 3])
+        } else {
+            self.text.chars().take(max_chars).collect()
+        }
+    }
+
     /// Insert a character at the cursor position
     pub fn insert_char(&mut self, c: char) {
         self.text.insert(self.cursor_pos, c);
@@ -413,6 +729,18 @@ impl AddressBar {
     /// Move cursor to end
     pub fn move_cursor_to_end(&mut self) {
         self.cursor_pos = self.text.len();
+    }
+}
+
+/// Truncate a title to fit in the available width
+fn truncate_title(title: &str, max_chars: f32) -> String {
+    let max_chars = max_chars.max(3.0) as usize;
+    if title.len() <= max_chars {
+        title.to_string()
+    } else if max_chars > 3 {
+        format!("{}...", &title[..max_chars - 3])
+    } else {
+        title.chars().take(max_chars).collect()
     }
 }
 
@@ -531,5 +859,49 @@ mod tests {
         chrome.update_navigation_state(true, true);
         assert!(chrome.back_button.enabled);
         assert!(chrome.forward_button.enabled);
+    }
+
+    #[test]
+    fn test_tab_layout() {
+        let mut chrome = Chrome::new(800.0);
+
+        let tab_infos = vec![
+            (TabId(0), "Tab 1".to_string(), false, true),
+            (TabId(1), "Tab 2".to_string(), false, false),
+        ];
+
+        chrome.layout_tabs(&tab_infos, TabId(0));
+
+        assert_eq!(chrome.tabs.len(), 2);
+        assert!(chrome.tabs[0].is_active);
+        assert!(!chrome.tabs[1].is_active);
+    }
+
+    #[test]
+    fn test_address_bar_truncation() {
+        let bar = AddressBar {
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0, // ~10 chars
+                height: 32.0,
+            },
+            text: String::from("https://very-long-url-example.com/path/to/page"),
+            cursor_pos: 0,
+            is_focused: false,
+        };
+
+        let display = bar.truncated_display_text();
+        assert!(display.ends_with("..."));
+        assert!(display.len() <= 13); // (100-16)/8 = ~10
+    }
+
+    #[test]
+    fn test_hit_test_new_tab_button() {
+        let chrome = Chrome::new(800.0);
+        let center_x = chrome.new_tab_button.rect.x + chrome.new_tab_button.rect.width / 2.0;
+        let center_y = chrome.new_tab_button.rect.y + chrome.new_tab_button.rect.height / 2.0;
+
+        assert_eq!(chrome.hit_test(center_x, center_y), Some(ChromeHit::NewTab));
     }
 }
