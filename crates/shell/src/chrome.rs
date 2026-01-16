@@ -32,6 +32,10 @@ pub struct Chrome {
     pub address_bar: AddressBar,
     /// Go button
     pub go_button: Button,
+    /// Whether a page is currently loading
+    pub is_loading: bool,
+    /// Loading animation frame counter
+    loading_frame: u8,
 }
 
 /// A clickable button
@@ -131,6 +135,17 @@ impl Chrome {
             forward_button,
             address_bar,
             go_button,
+            is_loading: false,
+            loading_frame: 0,
+        }
+    }
+
+    /// Update loading animation (call each frame when loading)
+    pub fn tick_loading(&mut self) {
+        if self.is_loading {
+            self.loading_frame = self.loading_frame.wrapping_add(1);
+        } else {
+            self.loading_frame = 0;
         }
     }
 
@@ -159,6 +174,24 @@ impl Chrome {
             },
             color: RenderColor::new(200, 200, 200, 255), // Darker gray
         });
+
+        // Loading indicator (animated progress bar at bottom of chrome)
+        if self.is_loading {
+            // Oscillating progress bar using sine wave
+            let progress = (self.loading_frame as f32 / 30.0 * std::f32::consts::PI).sin();
+            let bar_width = self.width * (0.3 + 0.3 * progress.abs());
+            let bar_x = (self.width - bar_width) * ((progress + 1.0) / 2.0);
+
+            commands.push(PaintCommand::FillRect {
+                rect: Rect {
+                    x: bar_x,
+                    y: self.height - 3.0,
+                    width: bar_width,
+                    height: 3.0,
+                },
+                color: RenderColor::new(66, 133, 244, 255), // Google blue
+            });
+        }
 
         // Back button
         self.render_button(&self.back_button, &mut commands);

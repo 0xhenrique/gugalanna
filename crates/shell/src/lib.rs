@@ -4,9 +4,11 @@
 
 mod chrome;
 mod event;
+mod loading;
 mod navigation;
 
 pub use chrome::{Chrome, ChromeHit, CHROME_HEIGHT};
+pub use loading::{LoadingState, NavigationError, NavigationResult};
 pub use navigation::NavigationState;
 
 use std::cell::RefCell;
@@ -97,6 +99,12 @@ pub struct Browser {
     focus: FocusTarget,
     http_client: HttpClient,
     current_cursor: CursorType,
+    /// Current loading state
+    loading_state: LoadingState,
+    /// Receiver for navigation results from async task
+    nav_receiver: Option<tokio::sync::mpsc::Receiver<NavigationResult>>,
+    /// Cancellation token for current navigation
+    nav_cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl Browser {
@@ -118,6 +126,9 @@ impl Browser {
             focus: FocusTarget::None,
             http_client,
             current_cursor: CursorType::Arrow,
+            loading_state: LoadingState::default(),
+            nav_receiver: None,
+            nav_cancel: None,
         })
     }
 
@@ -147,6 +158,87 @@ impl Browser {
 
         // Load the page
         self.load_page(url, &html)?;
+
+        Ok(())
+    }
+
+    /// Navigate to a URL asynchronously (non-blocking)
+    ///
+    /// This method starts the navigation and returns immediately.
+    /// The event loop will poll for completion via poll_navigation().
+    pub fn navigate_async(&mut self, url_str: &str) -> Result<(), String> {
+        // Cancel any in-progress navigation
+        if let Some(cancel) = self.nav_cancel.take() {
+            cancel.cancel();
+        }
+        self.nav_receiver = None;
+
+        // Parse URL
+        let url = if url_str.contains("://") {
+            Url::parse(url_str).map_err(|e| e.to_string())?
+        } else {
+            Url::parse(&format!("https://{}", url_str)).map_err(|e| e.to_string())?
+        };
+
+        log::info!("Starting async navigation to: {}", url);
+
+        // Update UI immediately
+        self.chrome.address_bar.set_text(url.as_str());
+        self.loading_state = LoadingState::Loading { url: url.clone() };
+        self.chrome.is_loading = true;
+
+        // Create channel and cancellation token
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
+        self.nav_receiver = Some(rx);
+        self.nav_cancel = Some(cancel_token.clone());
+
+        // Clone what we need for the async task
+        let client = self.http_client.clone();
+        let url_clone = url.clone();
+
+        // Spawn async fetch task
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    NavigationResult::Failed {
+                        url: url_clone,
+                        error: NavigationError::Cancelled,
+                    }
+                }
+                fetch_result = client.get(&url_clone) => {
+                    match fetch_result {
+                        Ok(response) if response.is_success() => {
+                            let html = response.text_lossy();
+                            NavigationResult::Success {
+                                url: response.url,
+                                html,
+                            }
+                        }
+                        Ok(response) => {
+                            NavigationResult::Failed {
+                                url: url_clone,
+                                error: NavigationError::HttpError { status: response.status },
+                            }
+                        }
+                        Err(e) => {
+                            let error = if e.to_string().contains("timed out") {
+                                NavigationError::Timeout
+                            } else {
+                                NavigationError::NetworkError(e.to_string())
+                            };
+                            NavigationResult::Failed {
+                                url: url_clone,
+                                error,
+                            }
+                        }
+                    }
+                }
+            };
+
+            let _ = tx.send(result).await;
+        });
 
         Ok(())
     }
@@ -428,6 +520,9 @@ impl Browser {
     /// Run the browser event loop
     pub fn run(&mut self) -> Result<(), String> {
         'running: loop {
+            // Poll for navigation completion
+            self.poll_navigation();
+
             // Poll events
             let events = poll_events();
 
@@ -473,6 +568,9 @@ impl Browser {
                 }
             }
 
+            // Update loading animation
+            self.chrome.tick_loading();
+
             // Render
             self.render();
 
@@ -505,7 +603,7 @@ impl Browser {
                 // Navigate to URL in address bar
                 let url = self.chrome.address_bar.text.clone();
                 if !url.is_empty() {
-                    if let Err(e) = self.navigate(&url) {
+                    if let Err(e) = self.navigate_async(&url) {
                         log::error!("Navigation failed: {}", e);
                     }
                 }
@@ -612,6 +710,89 @@ impl Browser {
         }
     }
 
+    /// Poll for navigation completion (called each frame)
+    fn poll_navigation(&mut self) {
+        let result = match self.nav_receiver.as_mut() {
+            Some(rx) => rx.try_recv().ok(),
+            None => None,
+        };
+
+        if let Some(result) = result {
+            self.chrome.is_loading = false;
+            self.nav_receiver = None;
+            self.nav_cancel = None;
+
+            match result {
+                NavigationResult::Success { url, html } => {
+                    log::info!("Navigation complete: {}", url);
+                    self.loading_state = LoadingState::Idle;
+
+                    // Load the page
+                    if let Err(e) = self.load_page(url, &html) {
+                        log::error!("Failed to load page: {}", e);
+                    }
+                }
+                NavigationResult::Failed { url, error } => {
+                    log::error!("Navigation failed to {}: {:?}", url, error);
+                    self.loading_state = LoadingState::Failed {
+                        url: url.clone(),
+                        error: error.clone(),
+                    };
+
+                    // Show error page
+                    self.show_error_page(&url, &error);
+                }
+            }
+        }
+    }
+
+    /// Display an error page for navigation failures
+    fn show_error_page(&mut self, url: &Url, error: &NavigationError) {
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+    <title>{title}</title>
+    <style>
+        body {{
+            font-family: sans-serif;
+            background-color: #f5f5f5;
+            color: #333;
+            padding: 40px;
+            text-align: center;
+        }}
+        h1 {{
+            color: #d93025;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }}
+        .url {{
+            color: #666;
+            word-break: break-all;
+            margin: 20px 0;
+        }}
+        .details {{
+            color: #888;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <h1>{title}</h1>
+    <p class="url">{url}</p>
+    <p class="details">{details}</p>
+</body>
+</html>"#,
+            title = error.title(),
+            url = url.as_str(),
+            details = error.details(),
+        );
+
+        // Load as error page (don't add to history)
+        let error_url = Url::parse("about:error").unwrap();
+        let _ = self.load_page_without_history(error_url, &html);
+    }
+
     /// Re-layout the page with new viewport dimensions
     fn relayout_page(&mut self) {
         if let Some(ref mut page) = self.page {
@@ -680,7 +861,7 @@ impl Browser {
                 ChromeHit::GoButton => {
                     let url = self.chrome.address_bar.text.clone();
                     if !url.is_empty() {
-                        if let Err(e) = self.navigate(&url) {
+                        if let Err(e) = self.navigate_async(&url) {
                             log::error!("Navigation failed: {}", e);
                         }
                     }
@@ -728,7 +909,7 @@ impl Browser {
                         // Resolve the URL and navigate
                         match resolve_link_url(&base_url, &href) {
                             Ok(target_url) => {
-                                if let Err(e) = self.navigate(target_url.as_str()) {
+                                if let Err(e) = self.navigate_async(target_url.as_str()) {
                                     log::error!("Link navigation failed: {}", e);
                                 }
                             }

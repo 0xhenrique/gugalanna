@@ -16,6 +16,7 @@ gugalanna-render.workspace = true
 gugalanna-js.workspace = true
 sdl2.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 thiserror.workspace = true
 log.workspace = true
 url.workspace = true

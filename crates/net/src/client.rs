@@ -20,6 +20,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_REDIRECTS: usize = 10;
 
 /// HTTP client for fetching resources
+#[derive(Clone)]
 pub struct HttpClient {
     client: reqwest::Client,
 }
