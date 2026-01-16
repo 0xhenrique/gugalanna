@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 use std::collections::VecDeque;
 
 use crate::entities::{decode_entity, decode_numeric};
-use crate::error::HtmlResult;
+use crate::error::{HtmlResult, SourceLocation};
 
 /// An HTML token
 #[derive(Debug, Clone, PartialEq)]
@@ -63,10 +63,26 @@ enum State {
     BeforeDoctypeName,
     DoctypeName,
     AfterDoctypeName,
+    // RAWTEXT states (script, style, xmp, iframe, noembed, noframes)
     RawText,
     RawTextLessThan,
     RawTextEndTagOpen,
     RawTextEndTagName,
+    // RCDATA states (title, textarea) - allows entity references
+    Rcdata,
+    RcdataLessThan,
+    RcdataEndTagOpen,
+    RcdataEndTagName,
+}
+
+/// Check if an element should use RAWTEXT parsing (no entity decoding)
+fn is_rawtext_element(name: &str) -> bool {
+    matches!(name, "script" | "style" | "xmp" | "iframe" | "noembed" | "noframes")
+}
+
+/// Check if an element should use RCDATA parsing (with entity decoding)
+fn is_rcdata_element(name: &str) -> bool {
+    matches!(name, "title" | "textarea")
 }
 
 /// HTML5 tokenizer
@@ -77,6 +93,10 @@ pub struct Tokenizer {
     #[allow(dead_code)] // Reserved for future use (character reference states)
     return_state: State,
     tokens: VecDeque<Token>,
+
+    // Position tracking
+    line: usize,
+    column: usize,
 
     // Current token being built
     current_tag_name: String,
@@ -105,6 +125,9 @@ impl Tokenizer {
             state: State::Data,
             return_state: State::Data,
             tokens: VecDeque::new(),
+
+            line: 1,
+            column: 1,
 
             current_tag_name: String::new(),
             current_tag_is_end: false,
@@ -143,7 +166,21 @@ impl Tokenizer {
     fn consume(&mut self) -> Option<char> {
         let c = self.current_char()?;
         self.pos += 1;
+
+        // Track line/column
+        if c == '\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
+
         Some(c)
+    }
+
+    /// Get the current source location
+    pub fn location(&self) -> SourceLocation {
+        SourceLocation::new(self.line, self.column, self.pos)
     }
 
     /// Peek at the next n characters
@@ -233,6 +270,10 @@ impl Tokenizer {
             State::RawTextLessThan => self.raw_text_less_than_state(),
             State::RawTextEndTagOpen => self.raw_text_end_tag_open_state(),
             State::RawTextEndTagName => self.raw_text_end_tag_name_state(),
+            State::Rcdata => self.rcdata_state(),
+            State::RcdataLessThan => self.rcdata_less_than_state(),
+            State::RcdataEndTagOpen => self.rcdata_end_tag_open_state(),
+            State::RcdataEndTagName => self.rcdata_end_tag_name_state(),
         }
         Ok(())
     }
@@ -310,18 +351,28 @@ impl Tokenizer {
             }
             Some('/') => self.state = State::SelfClosingStartTag,
             Some('>') => {
+                // Capture whether this is an end tag BEFORE emit (which resets the flag)
+                let is_end_tag = self.current_tag_is_end;
                 self.emit_current_tag();
-                // Switch to raw text mode for script/style
-                if !self.current_tag_is_end
-                    && (self.last_start_tag == "script" || self.last_start_tag == "style")
-                {
-                    self.state = State::RawText;
-                } else {
-                    self.state = State::Data;
-                }
+                self.state = self.next_state_after_start_tag(is_end_tag);
             }
             Some(c) => self.current_tag_name.push(c.to_ascii_lowercase()),
             None => self.emit(Token::Eof),
+        }
+    }
+
+    /// Determine the next state after emitting a tag
+    /// Only switches to special modes for start tags of raw/rcdata elements
+    fn next_state_after_start_tag(&self, was_end_tag: bool) -> State {
+        if was_end_tag {
+            return State::Data;
+        }
+        if is_rawtext_element(&self.last_start_tag) {
+            State::RawText
+        } else if is_rcdata_element(&self.last_start_tag) {
+            State::Rcdata
+        } else {
+            State::Data
         }
     }
 
@@ -376,14 +427,9 @@ impl Tokenizer {
             }
             Some('>') => {
                 self.consume();
+                let is_end_tag = self.current_tag_is_end;
                 self.emit_current_tag();
-                if !self.current_tag_is_end
-                    && (self.last_start_tag == "script" || self.last_start_tag == "style")
-                {
-                    self.state = State::RawText;
-                } else {
-                    self.state = State::Data;
-                }
+                self.state = self.next_state_after_start_tag(is_end_tag);
             }
             None => self.emit(Token::Eof),
             _ => {
@@ -494,14 +540,9 @@ impl Tokenizer {
             }
             Some('>') => {
                 self.consume();
+                let is_end_tag = self.current_tag_is_end;
                 self.emit_current_tag();
-                if !self.current_tag_is_end
-                    && (self.last_start_tag == "script" || self.last_start_tag == "style")
-                {
-                    self.state = State::RawText;
-                } else {
-                    self.state = State::Data;
-                }
+                self.state = self.next_state_after_start_tag(is_end_tag);
             }
             None => self.emit(Token::Eof),
             _ => self.state = State::BeforeAttributeName,
@@ -855,17 +896,115 @@ impl Tokenizer {
     fn emit_raw_text_chars(&mut self) {
         self.emit(Token::Character('<'));
         self.emit(Token::Character('/'));
-        let temp_chars: Vec<char> = self.temp_buffer.chars().collect();
-        let tag_chars: Vec<char> = self.current_tag_name.chars().collect();
-        for c in temp_chars {
-            self.emit(Token::Character(c));
-        }
-        for c in tag_chars {
+        // Only emit temp_buffer which has the original case characters
+        let chars: Vec<char> = self.temp_buffer.chars().collect();
+        for c in chars {
             self.emit(Token::Character(c));
         }
         self.temp_buffer.clear();
         self.current_tag_name.clear();
         self.state = State::RawText;
+    }
+
+    // RCDATA states - similar to RAWTEXT but allows entity references
+
+    fn rcdata_state(&mut self) {
+        match self.consume() {
+            Some('<') => {
+                self.state = State::RcdataLessThan;
+            }
+            Some('&') => {
+                if let Some(decoded) = self.consume_entity() {
+                    for c in decoded.chars() {
+                        self.emit(Token::Character(c));
+                    }
+                } else {
+                    self.emit(Token::Character('&'));
+                }
+            }
+            Some(c) => self.emit(Token::Character(c)),
+            None => self.emit(Token::Eof),
+        }
+    }
+
+    fn rcdata_less_than_state(&mut self) {
+        match self.current_char() {
+            Some('/') => {
+                self.consume();
+                self.temp_buffer.clear();
+                self.state = State::RcdataEndTagOpen;
+            }
+            _ => {
+                self.emit(Token::Character('<'));
+                self.state = State::Rcdata;
+            }
+        }
+    }
+
+    fn rcdata_end_tag_open_state(&mut self) {
+        match self.current_char() {
+            Some(c) if c.is_ascii_alphabetic() => {
+                self.current_tag_name.clear();
+                self.current_tag_is_end = true;
+                self.state = State::RcdataEndTagName;
+            }
+            _ => {
+                self.emit(Token::Character('<'));
+                self.emit(Token::Character('/'));
+                self.state = State::Rcdata;
+            }
+        }
+    }
+
+    fn rcdata_end_tag_name_state(&mut self) {
+        match self.current_char() {
+            Some('\t') | Some('\n') | Some('\x0C') | Some(' ') => {
+                if self.current_tag_name.eq_ignore_ascii_case(&self.last_start_tag) {
+                    self.consume();
+                    self.state = State::BeforeAttributeName;
+                } else {
+                    self.emit_rcdata_chars();
+                }
+            }
+            Some('/') => {
+                if self.current_tag_name.eq_ignore_ascii_case(&self.last_start_tag) {
+                    self.consume();
+                    self.state = State::SelfClosingStartTag;
+                } else {
+                    self.emit_rcdata_chars();
+                }
+            }
+            Some('>') => {
+                if self.current_tag_name.eq_ignore_ascii_case(&self.last_start_tag) {
+                    self.consume();
+                    self.emit_current_tag();
+                    self.state = State::Data;
+                } else {
+                    self.emit_rcdata_chars();
+                }
+            }
+            Some(c) if c.is_ascii_alphabetic() => {
+                self.consume();
+                self.current_tag_name.push(c.to_ascii_lowercase());
+                self.temp_buffer.push(c);
+            }
+            _ => {
+                self.emit_rcdata_chars();
+            }
+        }
+    }
+
+    fn emit_rcdata_chars(&mut self) {
+        self.emit(Token::Character('<'));
+        self.emit(Token::Character('/'));
+        // Only emit temp_buffer which has the original case characters
+        let chars: Vec<char> = self.temp_buffer.chars().collect();
+        for c in chars {
+            self.emit(Token::Character(c));
+        }
+        self.temp_buffer.clear();
+        self.current_tag_name.clear();
+        self.state = State::Rcdata;
     }
 
     /// Try to consume an HTML entity
@@ -988,5 +1127,285 @@ mod tests {
         } else {
             panic!("Expected Comment");
         }
+    }
+
+    // Helper to collect all tokens from a tokenizer
+    fn collect_tokens(html: &str) -> Vec<Token> {
+        let mut tokenizer = Tokenizer::new(html);
+        std::iter::from_fn(|| {
+            let tok = tokenizer.next_token().ok()?;
+            if tok == Token::Eof {
+                None
+            } else {
+                Some(tok)
+            }
+        })
+        .collect()
+    }
+
+    // === RAWTEXT element tests ===
+
+    #[test]
+    fn test_script_rawtext() {
+        let tokens = collect_tokens("<script>var x = '<div>not a tag</div>';</script>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, .. } if name == "script"));
+        // The content should be character tokens, not parsed as tags
+        let content: String = tokens[1..tokens.len() - 1]
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        assert_eq!(content, "var x = '<div>not a tag</div>';");
+        assert!(matches!(&tokens[tokens.len() - 1], Token::EndTag { name } if name == "script"));
+    }
+
+    #[test]
+    fn test_style_rawtext() {
+        let tokens = collect_tokens("<style>.foo { color: red; }</style>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, .. } if name == "style"));
+        let content: String = tokens[1..tokens.len() - 1]
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        assert_eq!(content, ".foo { color: red; }");
+        assert!(matches!(&tokens[tokens.len() - 1], Token::EndTag { name } if name == "style"));
+    }
+
+    // === RCDATA element tests ===
+
+    #[test]
+    fn test_title_rcdata() {
+        let tokens = collect_tokens("<title>Hello &amp; World</title>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, .. } if name == "title"));
+        // RCDATA should decode entities
+        let content: String = tokens[1..tokens.len() - 1]
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        assert_eq!(content, "Hello & World"); // Entity decoded
+        assert!(matches!(&tokens[tokens.len() - 1], Token::EndTag { name } if name == "title"));
+    }
+
+    #[test]
+    fn test_textarea_rcdata() {
+        let tokens = collect_tokens("<textarea>&lt;script&gt;alert('xss')&lt;/script&gt;</textarea>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, .. } if name == "textarea"));
+        let content: String = tokens[1..tokens.len() - 1]
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        // Should decode entities but not parse tags
+        assert_eq!(content, "<script>alert('xss')</script>");
+        assert!(matches!(&tokens[tokens.len() - 1], Token::EndTag { name } if name == "textarea"));
+    }
+
+    #[test]
+    fn test_title_no_nested_tags() {
+        let tokens = collect_tokens("<title><b>Bold</b> title</title>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, .. } if name == "title"));
+        // Tags inside title should be literal text, not parsed
+        let content: String = tokens[1..tokens.len() - 1]
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        assert_eq!(content, "<b>Bold</b> title");
+    }
+
+    // === Entity tests ===
+
+    #[test]
+    fn test_entity_in_text() {
+        let tokens = collect_tokens("<p>&lt;hello&gt;</p>");
+
+        let content: String = tokens
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        assert_eq!(content, "<hello>");
+    }
+
+    #[test]
+    fn test_entity_in_attribute() {
+        let tokens = collect_tokens(r#"<a href="?foo=1&amp;bar=2">"#);
+
+        if let Token::StartTag { attributes, .. } = &tokens[0] {
+            let href = attributes.iter().find(|(k, _)| k == "href").map(|(_, v)| v);
+            assert_eq!(href, Some(&"?foo=1&bar=2".to_string()));
+        } else {
+            panic!("Expected StartTag");
+        }
+    }
+
+    #[test]
+    fn test_numeric_entity() {
+        let tokens = collect_tokens("<p>&#65;&#x42;&#x43;</p>");
+
+        let content: String = tokens
+            .iter()
+            .filter_map(|t| if let Token::Character(c) = t { Some(*c) } else { None })
+            .collect();
+        assert_eq!(content, "ABC");
+    }
+
+    // === Self-closing tag tests ===
+
+    #[test]
+    fn test_self_closing_tag() {
+        let tokens = collect_tokens("<br/><hr /><input type='text'/>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, self_closing: true, .. } if name == "br"));
+        assert!(matches!(&tokens[1], Token::StartTag { name, self_closing: true, .. } if name == "hr"));
+        assert!(matches!(&tokens[2], Token::StartTag { name, self_closing: true, .. } if name == "input"));
+    }
+
+    #[test]
+    fn test_void_elements() {
+        // Void elements don't need closing tags
+        let tokens = collect_tokens("<img src='test.png'><br><input>");
+
+        assert!(matches!(&tokens[0], Token::StartTag { name, .. } if name == "img"));
+        assert!(matches!(&tokens[1], Token::StartTag { name, .. } if name == "br"));
+        assert!(matches!(&tokens[2], Token::StartTag { name, .. } if name == "input"));
+    }
+
+    // === Attribute edge cases ===
+
+    #[test]
+    fn test_unquoted_attribute() {
+        let tokens = collect_tokens("<div class=foo data-x=bar>");
+
+        if let Token::StartTag { attributes, .. } = &tokens[0] {
+            assert!(attributes.iter().any(|(k, v)| k == "class" && v == "foo"));
+            assert!(attributes.iter().any(|(k, v)| k == "data-x" && v == "bar"));
+        } else {
+            panic!("Expected StartTag");
+        }
+    }
+
+    #[test]
+    fn test_empty_attribute() {
+        let tokens = collect_tokens("<input disabled readonly>");
+
+        if let Token::StartTag { attributes, .. } = &tokens[0] {
+            assert!(attributes.iter().any(|(k, v)| k == "disabled" && v.is_empty()));
+            assert!(attributes.iter().any(|(k, v)| k == "readonly" && v.is_empty()));
+        } else {
+            panic!("Expected StartTag");
+        }
+    }
+
+    #[test]
+    fn test_attribute_case_insensitive() {
+        let tokens = collect_tokens("<DIV CLASS='foo' ID='bar'>");
+
+        if let Token::StartTag { name, attributes, .. } = &tokens[0] {
+            assert_eq!(name, "div"); // Tag name lowercased
+            assert!(attributes.iter().any(|(k, v)| k == "class" && v == "foo")); // Attr name lowercased
+            assert!(attributes.iter().any(|(k, v)| k == "id" && v == "bar"));
+        } else {
+            panic!("Expected StartTag");
+        }
+    }
+
+    // === Comment edge cases ===
+
+    #[test]
+    fn test_empty_comment() {
+        let tokens = collect_tokens("<!---->");
+
+        if let Token::Comment(text) = &tokens[0] {
+            assert_eq!(text, "");
+        } else {
+            panic!("Expected Comment");
+        }
+    }
+
+    #[test]
+    fn test_comment_with_dashes() {
+        let tokens = collect_tokens("<!-- -- hello -- -->");
+
+        if let Token::Comment(text) = &tokens[0] {
+            assert_eq!(text, " -- hello -- ");
+        } else {
+            panic!("Expected Comment");
+        }
+    }
+
+    // === Whitespace handling ===
+
+    #[test]
+    fn test_whitespace_between_attributes() {
+        let tokens = collect_tokens("<div   class='foo'    id='bar'   >");
+
+        if let Token::StartTag { name, attributes, .. } = &tokens[0] {
+            assert_eq!(name, "div");
+            assert_eq!(attributes.len(), 2);
+        } else {
+            panic!("Expected StartTag");
+        }
+    }
+
+    // === Position tracking ===
+
+    #[test]
+    fn test_position_tracking() {
+        let mut tokenizer = Tokenizer::new("hello\nworld");
+
+        // Consume all of "hello\n"
+        for _ in 0..6 {
+            tokenizer.next_token().unwrap();
+        }
+
+        let loc = tokenizer.location();
+        assert_eq!(loc.line, 2);
+        assert_eq!(loc.column, 1); // Start of second line
+    }
+
+    // === Malformed HTML recovery ===
+
+    #[test]
+    fn test_unclosed_tag() {
+        // Unclosed < should emit as character
+        let tokens = collect_tokens("< text");
+
+        assert!(matches!(&tokens[0], Token::Character('<')));
+    }
+
+    #[test]
+    fn test_invalid_tag_start() {
+        let tokens = collect_tokens("<1invalid>");
+
+        // Should treat as text since tag names must start with letter
+        assert!(matches!(&tokens[0], Token::Character('<')));
+    }
+
+    // === Multiple elements ===
+
+    #[test]
+    fn test_nested_elements() {
+        let tokens = collect_tokens("<div><span>text</span></div>");
+
+        let tag_names: Vec<String> = tokens
+            .iter()
+            .filter_map(|t| match t {
+                Token::StartTag { name, .. } => Some(format!("<{}>", name)),
+                Token::EndTag { name } => Some(format!("</{}>", name)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(tag_names, vec!["<div>", "<span>", "</span>", "</div>"]);
+    }
+
+    #[test]
+    fn test_sibling_elements() {
+        let tokens = collect_tokens("<p>a</p><p>b</p><p>c</p>");
+
+        let tag_count = tokens.iter().filter(|t| matches!(t, Token::StartTag { .. } | Token::EndTag { .. })).count();
+        assert_eq!(tag_count, 6); // 3 start + 3 end
     }
 }

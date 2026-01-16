@@ -9,4 +9,4 @@ mod entities;
 
 pub use tokenizer::{Tokenizer, Token};
 pub use tree_builder::HtmlParser;
-pub use error::{HtmlError, HtmlResult};
+pub use error::{HtmlError, HtmlResult, SourceLocation};
