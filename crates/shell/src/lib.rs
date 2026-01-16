@@ -205,6 +205,20 @@ impl Browser {
             cascade.add_author_stylesheet(stylesheet);
         }
 
+        // Extract and add CSS from <style> tags in the document
+        {
+            let dom_ref = shared_dom.borrow();
+            let style_elements = dom_ref.get_elements_by_tag_name("style");
+            for style_id in style_elements {
+                // Get the text content of the style element
+                if let Some(style_css) = extract_style_content(&dom_ref, style_id) {
+                    if let Ok(stylesheet) = Stylesheet::parse(&style_css) {
+                        cascade.add_author_stylesheet(stylesheet);
+                    }
+                }
+            }
+        }
+
         // Calculate viewport (below chrome)
         let viewport_width = self.config.width as f32;
         let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
@@ -342,6 +356,19 @@ impl Browser {
         let css = "body { background-color: white; color: black; font-size: 16px; }";
         if let Ok(stylesheet) = Stylesheet::parse(css) {
             cascade.add_author_stylesheet(stylesheet);
+        }
+
+        // Extract and add CSS from <style> tags in the document
+        {
+            let dom_ref = shared_dom.borrow();
+            let style_elements = dom_ref.get_elements_by_tag_name("style");
+            for style_id in style_elements {
+                if let Some(style_css) = extract_style_content(&dom_ref, style_id) {
+                    if let Ok(stylesheet) = Stylesheet::parse(&style_css) {
+                        cascade.add_author_stylesheet(stylesheet);
+                    }
+                }
+            }
         }
 
         // Calculate viewport (below chrome)
@@ -821,4 +848,22 @@ fn hit_test_regions(regions: &[HitRegion], x: f32, y: f32) -> Option<u32> {
         }
     }
     None
+}
+
+/// Extract text content from a <style> element
+fn extract_style_content(dom: &DomTree, style_id: gugalanna_dom::NodeId) -> Option<String> {
+    // Get all text children of the style element and concatenate them
+    let mut css_content = String::new();
+    for child_id in dom.children(style_id) {
+        if let Some(node) = dom.get(child_id) {
+            if let Some(text) = node.as_text() {
+                css_content.push_str(text);
+            }
+        }
+    }
+    if css_content.is_empty() {
+        None
+    } else {
+        Some(css_content)
+    }
 }
