@@ -215,6 +215,29 @@ impl DomTree {
         }
     }
 
+    /// Get the parent of a node
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        self.get(id).and_then(|n| n.parent)
+    }
+
+    /// Set an attribute on an element
+    pub fn set_attribute(&mut self, id: NodeId, name: &str, value: &str) {
+        if let Some(node) = self.get_mut(id) {
+            if let Some(elem) = node.as_element_mut() {
+                elem.set_attribute(name, value);
+            }
+        }
+    }
+
+    /// Remove an attribute from an element
+    pub fn remove_attribute(&mut self, id: NodeId, name: &str) {
+        if let Some(node) = self.get_mut(id) {
+            if let Some(elem) = node.as_element_mut() {
+                elem.remove_attribute(name);
+            }
+        }
+    }
+
     /// Get the number of nodes in the tree
     pub fn len(&self) -> usize {
         self.nodes.len()

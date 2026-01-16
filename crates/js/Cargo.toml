@@ -10,3 +10,6 @@ gugalanna-dom.workspace = true
 rquickjs.workspace = true
 thiserror.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+gugalanna-html.workspace = true
