@@ -93,6 +93,82 @@ impl JsRuntime {
     pub fn exec_script(&self, code: &str, _filename: &str) -> Result<(), JsError> {
         self.exec(code)
     }
+
+    /// Dispatch a click event to an element by its node ID
+    pub fn dispatch_click(&self, node_id: u32) -> Result<(), JsError> {
+        let code = format!(
+            "if (typeof __dispatchEvent === 'function') {{ __dispatchEvent({}, 'click'); }}",
+            node_id
+        );
+        self.exec(&code)
+    }
+
+    /// Dispatch a custom event to an element
+    pub fn dispatch_event(&self, node_id: u32, event_type: &str) -> Result<(), JsError> {
+        let code = format!(
+            "if (typeof __dispatchEvent === 'function') {{ __dispatchEvent({}, '{}'); }}",
+            node_id, event_type
+        );
+        self.exec(&code)
+    }
+
+    /// Check if an element has event listeners
+    pub fn has_event_listeners(&self, node_id: u32, event_type: &str) -> bool {
+        let code = format!(
+            "(typeof __hasEventListeners === 'function') && __hasEventListeners({}, '{}')",
+            node_id, event_type
+        );
+        self.eval(&code)
+            .map(|v| v.as_bool().unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// Execute all inline <script> tags from the DOM
+    ///
+    /// Scripts are executed in document order. This only handles inline scripts,
+    /// not external script sources (src attribute).
+    pub fn execute_scripts(&self) -> Result<Vec<ScriptResult>, JsError> {
+        let dom = match &self.dom {
+            Some(d) => d,
+            None => return Ok(vec![]),
+        };
+
+        // Collect all scripts first while holding the borrow, then release it
+        // before executing (so scripts can access the DOM)
+        let scripts: Vec<(u32, String)> = {
+            let dom_ref = dom.borrow();
+            let script_nodes = dom_ref.get_elements_by_tag_name("script");
+            script_nodes
+                .into_iter()
+                .map(|id| (id.0, dom_ref.text_content(id)))
+                .filter(|(_, content)| !content.trim().is_empty())
+                .collect()
+        };
+
+        // Now execute scripts without holding the DOM borrow
+        let mut results = Vec::new();
+        for (node_id, content) in scripts {
+            let result = self.exec(&content);
+            results.push(ScriptResult {
+                node_id,
+                success: result.is_ok(),
+                error: result.err().map(|e| e.to_string()),
+            });
+        }
+
+        Ok(results)
+    }
+}
+
+/// Result of executing a script tag
+#[derive(Debug, Clone)]
+pub struct ScriptResult {
+    /// The node ID of the script element
+    pub node_id: u32,
+    /// Whether the script executed successfully
+    pub success: bool,
+    /// Error message if the script failed
+    pub error: Option<String>,
 }
 
 impl Default for JsRuntime {
@@ -233,6 +309,9 @@ fn register_dom_api(ctx: &rquickjs::Ctx<'_>, dom: SharedDom) -> Result<(), rquic
     // Now inject JavaScript wrappers to create a nicer API
     let wrapper_code = r#"
         (function() {
+            // Event listener storage: Map<nodeId, Map<eventType, Array<listener>>>
+            var __eventListeners = {};
+
             // Element wrapper class
             function Element(nodeId) {
                 this.__nodeId = nodeId;
@@ -270,6 +349,33 @@ fn register_dom_api(ctx: &rquickjs::Ctx<'_>, dom: SharedDom) -> Result<(), rquic
                 return child;
             };
 
+            // Event handling methods
+            Element.prototype.addEventListener = function(type, listener) {
+                if (typeof listener !== 'function') return;
+                var nodeId = this.__nodeId;
+                if (!__eventListeners[nodeId]) {
+                    __eventListeners[nodeId] = {};
+                }
+                if (!__eventListeners[nodeId][type]) {
+                    __eventListeners[nodeId][type] = [];
+                }
+                // Avoid duplicate listeners
+                if (__eventListeners[nodeId][type].indexOf(listener) === -1) {
+                    __eventListeners[nodeId][type].push(listener);
+                }
+            };
+
+            Element.prototype.removeEventListener = function(type, listener) {
+                var nodeId = this.__nodeId;
+                if (!__eventListeners[nodeId] || !__eventListeners[nodeId][type]) {
+                    return;
+                }
+                var idx = __eventListeners[nodeId][type].indexOf(listener);
+                if (idx !== -1) {
+                    __eventListeners[nodeId][type].splice(idx, 1);
+                }
+            };
+
             // Document API wrappers
             document.getElementById = function(id) {
                 var nodeId = document._getElementId(id);
@@ -304,6 +410,38 @@ fn register_dom_api(ctx: &rquickjs::Ctx<'_>, dom: SharedDom) -> Result<(), rquic
                 }
                 var els = document.getElementsByTagName(selector);
                 return els.length > 0 ? els[0] : null;
+            };
+
+            // Global functions for Rust to call into JS for event dispatching
+            globalThis.__dispatchEvent = function(nodeId, eventType) {
+                if (!__eventListeners[nodeId] || !__eventListeners[nodeId][eventType]) {
+                    return;
+                }
+                // Create a simple event object
+                var event = {
+                    type: eventType,
+                    target: new Element(nodeId),
+                    currentTarget: new Element(nodeId),
+                    preventDefault: function() { this.defaultPrevented = true; },
+                    stopPropagation: function() { this.propagationStopped = true; },
+                    defaultPrevented: false,
+                    propagationStopped: false
+                };
+                // Call all listeners
+                var listeners = __eventListeners[nodeId][eventType].slice();
+                for (var i = 0; i < listeners.length; i++) {
+                    try {
+                        listeners[i].call(event.target, event);
+                    } catch (e) {
+                        console.error('Event listener error: ' + e);
+                    }
+                }
+            };
+
+            globalThis.__hasEventListeners = function(nodeId, eventType) {
+                return __eventListeners[nodeId] &&
+                       __eventListeners[nodeId][eventType] &&
+                       __eventListeners[nodeId][eventType].length > 0;
             };
 
             // Store Element constructor globally
@@ -538,6 +676,259 @@ mod tests {
 
         // Verify element was created
         let result = runtime.eval("document.getElementById('new-element') !== null").unwrap();
+        assert_eq!(result.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_add_event_listener() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"<button id="btn">Click me</button>"#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Add event listener that sets a global variable when clicked
+        runtime.exec(r#"
+            globalThis.clicked = false;
+            var btn = document.getElementById('btn');
+            btn.addEventListener('click', function(e) {
+                globalThis.clicked = true;
+            });
+        "#).unwrap();
+
+        // Get the button node ID dynamically
+        let node_id = runtime.eval("document.getElementById('btn').__nodeId").unwrap();
+        let btn_id = node_id.as_number().unwrap() as u32;
+
+        // Verify listener was registered
+        let has_listeners = runtime.has_event_listeners(btn_id, "click");
+        assert!(has_listeners, "Button should have click listeners");
+
+        // Not clicked yet
+        let result = runtime.eval("globalThis.clicked").unwrap();
+        assert_eq!(result.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_dispatch_click() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"<button id="btn">Click me</button>"#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Add event listener
+        runtime.exec(r#"
+            globalThis.clickCount = 0;
+            var btn = document.getElementById('btn');
+            btn.addEventListener('click', function(e) {
+                globalThis.clickCount++;
+            });
+        "#).unwrap();
+
+        // Get the button node ID
+        let node_id = runtime.eval("document.getElementById('btn').__nodeId").unwrap();
+        let btn_id = node_id.as_number().unwrap() as u32;
+
+        // Dispatch click event from Rust
+        runtime.dispatch_click(btn_id).unwrap();
+
+        // Verify click was handled
+        let result = runtime.eval("globalThis.clickCount").unwrap();
+        assert_eq!(result.as_number(), Some(1.0));
+
+        // Dispatch another click
+        runtime.dispatch_click(btn_id).unwrap();
+
+        let result = runtime.eval("globalThis.clickCount").unwrap();
+        assert_eq!(result.as_number(), Some(2.0));
+    }
+
+    #[test]
+    fn test_remove_event_listener() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"<button id="btn">Click</button>"#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Add and then remove listener
+        runtime.exec(r#"
+            globalThis.clicked = false;
+            var btn = document.getElementById('btn');
+            var handler = function() { globalThis.clicked = true; };
+            btn.addEventListener('click', handler);
+            btn.removeEventListener('click', handler);
+        "#).unwrap();
+
+        // Get the button node ID
+        let node_id = runtime.eval("document.getElementById('btn').__nodeId").unwrap();
+        let btn_id = node_id.as_number().unwrap() as u32;
+
+        // Listener was removed, so has_event_listeners should return false
+        assert!(!runtime.has_event_listeners(btn_id, "click"));
+
+        // Dispatch click - should not change the variable
+        runtime.dispatch_click(btn_id).unwrap();
+
+        let result = runtime.eval("globalThis.clicked").unwrap();
+        assert_eq!(result.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_event_object() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"<div id="target">Target</div>"#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Add listener that checks event properties
+        runtime.exec(r#"
+            globalThis.eventType = '';
+            globalThis.targetId = '';
+            var target = document.getElementById('target');
+            target.addEventListener('click', function(e) {
+                globalThis.eventType = e.type;
+                globalThis.targetId = e.target.id;
+            });
+        "#).unwrap();
+
+        // Get node ID and dispatch
+        let node_id = runtime.eval("document.getElementById('target').__nodeId").unwrap();
+        let target_id = node_id.as_number().unwrap() as u32;
+
+        runtime.dispatch_click(target_id).unwrap();
+
+        // Verify event object had correct properties
+        let result = runtime.eval("globalThis.eventType").unwrap();
+        assert_eq!(result.as_str(), Some("click"));
+
+        let result = runtime.eval("globalThis.targetId").unwrap();
+        assert_eq!(result.as_str(), Some("target"));
+    }
+
+    #[test]
+    fn test_execute_scripts() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"
+            <html>
+            <body>
+                <script>
+                    globalThis.scriptRan = true;
+                    globalThis.counter = 1;
+                </script>
+                <div id="content">Hello</div>
+                <script>
+                    globalThis.counter = globalThis.counter + 1;
+                </script>
+            </body>
+            </html>
+        "#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Execute all scripts
+        let results = runtime.execute_scripts().unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+
+        // Verify scripts ran in order
+        let result = runtime.eval("globalThis.scriptRan").unwrap();
+        assert_eq!(result.as_bool(), Some(true));
+
+        let result = runtime.eval("globalThis.counter").unwrap();
+        assert_eq!(result.as_number(), Some(2.0));
+    }
+
+    #[test]
+    fn test_script_with_dom_manipulation() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"
+            <html>
+            <body>
+                <div id="container"></div>
+                <script>
+                    var div = document.getElementById('container');
+                    div.setAttribute('data-ready', 'true');
+                </script>
+            </body>
+            </html>
+        "#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Execute scripts
+        runtime.execute_scripts().unwrap();
+
+        // Verify DOM was modified
+        let result = runtime.eval("document.getElementById('container').getAttribute('data-ready')").unwrap();
+        assert_eq!(result.as_str(), Some("true"));
+    }
+
+    #[test]
+    fn test_script_error_handling() {
+        use gugalanna_html::HtmlParser;
+
+        let html = r#"
+            <html>
+            <body>
+                <script>
+                    // This will succeed
+                    globalThis.first = true;
+                </script>
+                <script>
+                    // This will fail
+                    throw new Error('Intentional error');
+                </script>
+                <script>
+                    // This should not run after error
+                    globalThis.third = true;
+                </script>
+            </body>
+            </html>
+        "#;
+
+        let parser = HtmlParser::new();
+        let dom = parser.parse(html).unwrap();
+
+        let runtime = JsRuntime::with_dom(dom).unwrap();
+
+        // Execute scripts - should continue after error
+        let results = runtime.execute_scripts().unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results[0].success);
+        assert!(!results[1].success);
+        assert!(results[1].error.is_some());
+        // The third script still runs despite the second failing
+        assert!(results[2].success);
+
+        // First script ran
+        let result = runtime.eval("globalThis.first").unwrap();
+        assert_eq!(result.as_bool(), Some(true));
+
+        // Third script also ran (scripts are independent)
+        let result = runtime.eval("globalThis.third").unwrap();
         assert_eq!(result.as_bool(), Some(true));
     }
 }
