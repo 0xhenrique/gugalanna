@@ -7,7 +7,7 @@ use gugalanna_layout::{LayoutBox, BoxType, Rect};
 use crate::paint::RenderColor;
 
 /// A display list of paint commands
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DisplayList {
     pub commands: Vec<PaintCommand>,
 }

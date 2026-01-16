@@ -18,3 +18,4 @@ sdl2.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 log.workspace = true
+url.workspace = true
