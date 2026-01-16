@@ -118,11 +118,8 @@ impl Browser {
         // Update address bar
         self.chrome.address_bar.set_text(url.as_str());
 
-        // Fetch the page (blocking for MVP)
-        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-        let response = rt
-            .block_on(self.http_client.get(&url))
-            .map_err(|e| e.to_string())?;
+        // Fetch the page - use block_in_place to allow blocking in async context
+        let response = self.fetch_url(&url)?;
 
         if !response.is_success() {
             return Err(format!("HTTP error: {}", response.status));
@@ -271,10 +268,7 @@ impl Browser {
 
     /// Reload a URL (for back/forward)
     fn reload_url(&mut self, url: Url) -> Result<(), String> {
-        let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-        let response = rt
-            .block_on(self.http_client.get(&url))
-            .map_err(|e| e.to_string())?;
+        let response = self.fetch_url(&url)?;
 
         if !response.is_success() {
             return Err(format!("HTTP error: {}", response.status));
@@ -282,6 +276,25 @@ impl Browser {
 
         let html = response.text_lossy();
         self.load_page_without_history(url, &html)
+    }
+
+    /// Fetch a URL, handling both sync and async contexts
+    fn fetch_url(&self, url: &Url) -> Result<gugalanna_net::Response, String> {
+        use tokio::runtime::Handle;
+
+        // Check if we're already in a tokio runtime
+        if let Ok(handle) = Handle::try_current() {
+            // We're in an async context - use block_in_place
+            tokio::task::block_in_place(|| {
+                handle.block_on(self.http_client.get(url))
+            })
+            .map_err(|e| e.to_string())
+        } else {
+            // No runtime - create one
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(self.http_client.get(url))
+                .map_err(|e| e.to_string())
+        }
     }
 
     /// Load page without adding to history (for back/forward)
