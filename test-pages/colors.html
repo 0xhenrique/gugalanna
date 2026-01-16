@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Colors Test</title>
+    <style>
+        .hex-color { color: #ff5733; }
+        .rgb-color { color: rgb(46, 204, 113); }
+        .named-color { color: purple; }
+
+        .bg-hex { background-color: #3498db; color: white; padding: 10px; }
+        .bg-rgb { background-color: rgb(155, 89, 182); color: white; padding: 10px; }
+        .bg-named { background-color: coral; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Colors Test</h1>
+
+    <h2>Text Colors</h2>
+    <p class="hex-color">This text uses hex color (#ff5733)</p>
+    <p class="rgb-color">This text uses RGB color (46, 204, 113)</p>
+    <p class="named-color">This text uses named color (purple)</p>
+
+    <h2>Background Colors</h2>
+    <div class="bg-hex">Hex background (#3498db)</div>
+    <div class="bg-rgb">RGB background (155, 89, 182)</div>
+    <div class="bg-named">Named background (coral)</div>
+
+    <h2>Inline Color Changes</h2>
+    <p>
+        Normal text with <span style="color: red;">red inline</span> and
+        <span style="color: blue;">blue inline</span> and back to normal.
+    </p>
+</body>
+</html>

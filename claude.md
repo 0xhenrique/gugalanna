@@ -18,7 +18,23 @@ cargo build           # Debug build
 cargo test            # Run all tests (expect 261 to pass)
 cargo run -- --demo   # Hello World demo
 cargo run -- --render <URL>  # Render a URL
+cargo run -- --file <PATH>   # Render a local HTML file
 ```
+
+## Test Pages
+
+Local HTML files for testing rendering are in `test-pages/`:
+
+```bash
+cargo run -- --file test-pages/basic.html      # Block stacking
+cargo run -- --file test-pages/layout.html     # Nested blocks, margins
+cargo run -- --file test-pages/colors.html     # Text and background colors
+cargo run -- --file test-pages/inline.html     # Inline elements
+cargo run -- --file test-pages/forms.html      # Form elements
+cargo run -- --file test-pages/mini-site/index.html  # Complete site with JS
+```
+
+Use these instead of external URLs for predictable testing. See `test-pages/README.md` for details.
 
 ## Development Workflow
 

@@ -1,0 +1,72 @@
+/* Mini Site Styles */
+
+body {
+    font-size: 16px;
+    color: #333;
+    background-color: #fff;
+    margin: 0;
+    padding: 0;
+}
+
+header {
+    background-color: #2c3e50;
+    color: white;
+    padding: 20px;
+}
+
+header h1 {
+    margin: 0 0 10px 0;
+}
+
+nav a {
+    color: #3498db;
+    margin-right: 15px;
+}
+
+main {
+    padding: 20px;
+}
+
+section {
+    margin-bottom: 30px;
+    padding: 15px;
+    background-color: #f9f9f9;
+}
+
+section h2 {
+    color: #2c3e50;
+    margin-top: 0;
+}
+
+ul {
+    padding-left: 20px;
+}
+
+li {
+    margin-bottom: 5px;
+}
+
+#click-target {
+    background-color: #3498db;
+    color: white;
+    padding: 15px;
+}
+
+#result {
+    background-color: #ecf0f1;
+    padding: 10px;
+    color: #7f8c8d;
+}
+
+button {
+    background-color: #2ecc71;
+    color: white;
+    padding: 10px 20px;
+    margin-right: 10px;
+}
+
+footer {
+    background-color: #34495e;
+    color: #bdc3c7;
+    padding: 15px;
+}

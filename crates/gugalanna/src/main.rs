@@ -3,6 +3,8 @@
 //! Usage: gugalanna <url>
 
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 use url::Url;
@@ -61,6 +63,19 @@ async fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
         }
+        "--file" => {
+            // Render a local HTML file
+            if args.len() < 3 {
+                eprintln!("Usage: {} --file <PATH>", args[0]);
+                return ExitCode::FAILURE;
+            }
+            if let Err(e) = run_file(&args[2]) {
+                eprintln!("Error: {}", e);
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         url_str => {
             // Text-only mode: fetch and display DOM tree
             if let Err(e) = fetch_and_display(url_str).await {
@@ -81,18 +96,20 @@ USAGE:
     {} [OPTIONS] <URL>
 
 OPTIONS:
-    -h, --help       Print this help message
-    -V, --version    Print version information
-    --demo           Run a rendering demo (Hello World)
-    --render <URL>   Render a URL in a window
+    -h, --help        Print this help message
+    -V, --version     Print version information
+    --demo            Run a rendering demo (Hello World)
+    --render <URL>    Render a URL in a window
+    --file <PATH>     Render a local HTML file
 
 EXAMPLES:
     {} https://example.com
     {} --demo
     {} --render https://example.com
+    {} --file test-pages/basic.html
 
 "#,
-        VERSION, program, program, program, program
+        VERSION, program, program, program, program, program
     );
 }
 
@@ -124,6 +141,46 @@ fn run_browser(url_str: &str) -> Result<(), String> {
 
     // Navigate to the URL
     browser.navigate(url_str)?;
+
+    browser.run()
+}
+
+/// Run browser with a local HTML file
+fn run_file(path_str: &str) -> Result<(), String> {
+    let path = Path::new(path_str);
+
+    // Read HTML file
+    let html = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path_str, e))?;
+
+    // Try to find and read associated CSS file
+    let css = if let Some(parent) = path.parent() {
+        // Look for style.css in the same directory
+        let css_path = parent.join("style.css");
+        if css_path.exists() {
+            fs::read_to_string(&css_path).unwrap_or_default()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let title = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Gugalanna");
+
+    let config = BrowserConfig {
+        title: format!("Gugalanna - {}", title),
+        width: 1024,
+        height: 768,
+    };
+
+    let mut browser = Browser::new(config)?;
+
+    // Load HTML content directly
+    browser.load_html(&html, &css)?;
 
     browser.run()
 }

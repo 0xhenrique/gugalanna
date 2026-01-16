@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Layout Test</title>
+    <style>
+        .container {
+            background-color: #f0f0f0;
+            padding: 20px;
+            margin: 10px;
+        }
+        .box {
+            background-color: #4a90d9;
+            color: white;
+            padding: 10px;
+            margin: 5px;
+        }
+        .nested {
+            background-color: #2ecc71;
+            padding: 15px;
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Layout Test</h1>
+
+    <h2>Block Stacking</h2>
+    <div class="box">Block 1</div>
+    <div class="box">Block 2</div>
+    <div class="box">Block 3</div>
+
+    <h2>Nested Blocks</h2>
+    <div class="container">
+        <p>Container with nested content</p>
+        <div class="nested">
+            <p>Nested div with paragraph</p>
+        </div>
+        <div class="nested">
+            <p>Another nested div</p>
+        </div>
+    </div>
+
+    <h2>Margins and Padding</h2>
+    <div style="margin: 20px; padding: 20px; background-color: #e74c3c; color: white;">
+        This box has 20px margin and 20px padding
+    </div>
+</body>
+</html>
