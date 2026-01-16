@@ -7,7 +7,10 @@ license.workspace = true
 
 [dependencies]
 gugalanna-layout.workspace = true
+gugalanna-style.workspace = true
+gugalanna-css.workspace = true
 thiserror.workspace = true
 log.workspace = true
 fontdue.workspace = true
 image.workspace = true
+sdl2.workspace = true
