@@ -9,6 +9,8 @@ pub enum BrowserEvent {
     Quit,
     /// Mouse button pressed
     MouseDown { x: f32, y: f32, button: MouseButton },
+    /// Mouse wheel scrolled
+    MouseWheel { x: i32, y: i32 },
     /// Key pressed
     KeyDown { scancode: u32 },
     /// Text input (for address bar)
@@ -31,6 +33,7 @@ const SDL_QUIT: u32 = 0x100;
 const SDL_KEYDOWN: u32 = 0x300;
 const SDL_TEXTINPUT: u32 = 0x303;
 const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
+const SDL_MOUSEWHEEL: u32 = 0x403;
 const SDL_WINDOWEVENT: u32 = 0x200;
 
 // SDL scancode constants
@@ -38,6 +41,14 @@ pub const SCANCODE_ESCAPE: u32 = 41;
 pub const SCANCODE_Q: u32 = 20;
 pub const SCANCODE_BACKSPACE: u32 = 42;
 pub const SCANCODE_RETURN: u32 = 40;
+
+// Scroll-related scancodes
+pub const SCANCODE_UP: u32 = 82;
+pub const SCANCODE_DOWN: u32 = 81;
+pub const SCANCODE_PAGEUP: u32 = 75;
+pub const SCANCODE_PAGEDOWN: u32 = 78;
+pub const SCANCODE_HOME: u32 = 74;
+pub const SCANCODE_END: u32 = 77;
 
 // SDL window event subtypes
 const SDL_WINDOWEVENT_CLOSE: u8 = 14;
@@ -92,6 +103,14 @@ pub fn poll_events() -> Vec<BrowserEvent> {
                         x: button_event.x as f32,
                         y: button_event.y as f32,
                         button,
+                    });
+                }
+
+                SDL_MOUSEWHEEL => {
+                    let wheel_event = raw_event.wheel;
+                    events.push(BrowserEvent::MouseWheel {
+                        x: wheel_event.x,
+                        y: wheel_event.y,
                     });
                 }
 

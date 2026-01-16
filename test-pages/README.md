@@ -10,6 +10,7 @@ cargo run -- --file test-pages/layout.html
 cargo run -- --file test-pages/colors.html
 cargo run -- --file test-pages/inline.html
 cargo run -- --file test-pages/forms.html
+cargo run -- --file test-pages/scroll.html
 cargo run -- --file test-pages/mini-site/index.html
 ```
 
@@ -22,6 +23,7 @@ cargo run -- --file test-pages/mini-site/index.html
 | `colors.html` | Hex, RGB, and named colors for text and backgrounds |
 | `inline.html` | Inline elements (strong, em, a, span, code) |
 | `forms.html` | Form elements (button, input) - layout only |
+| `scroll.html` | Page scrolling (mouse wheel, keyboard, content bounds) |
 | `mini-site/` | Complete site with external CSS and JS |
 
 ## Mini Site

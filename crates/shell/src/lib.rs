@@ -51,6 +51,11 @@ enum FocusTarget {
     Page,
 }
 
+/// Scroll constants
+const SCROLL_LINE_HEIGHT: f32 = 40.0; // Arrow keys scroll amount
+const SCROLL_PAGE_FACTOR: f32 = 0.9; // Page Up/Down scrolls 90% of viewport
+const SCROLL_WHEEL_MULTIPLIER: f32 = 40.0; // Mouse wheel multiplier
+
 /// Page state (rendered content)
 struct PageState {
     /// Current URL
@@ -61,6 +66,12 @@ struct PageState {
     js_runtime: Option<JsRuntime>,
     /// Layout tree for hit testing (stored as display list node IDs)
     hit_regions: Vec<HitRegion>,
+    /// Current vertical scroll offset (0 = top)
+    scroll_y: f32,
+    /// Total content height
+    content_height: f32,
+    /// Visible viewport height (window height - chrome height)
+    viewport_height: f32,
 }
 
 /// Hit region for click handling
@@ -216,6 +227,9 @@ impl Browser {
             ContainingBlock::new(viewport_width, viewport_height),
         );
 
+        // Get content height for scrolling
+        let content_height = layout_tree.dimensions.margin_box_height();
+
         // Build display list
         let display_list = build_display_list(&layout_tree);
 
@@ -238,6 +252,9 @@ impl Browser {
             display_list,
             js_runtime,
             hit_regions,
+            scroll_y: 0.0,
+            content_height,
+            viewport_height,
         });
 
         log::info!(
@@ -344,6 +361,9 @@ impl Browser {
             ContainingBlock::new(viewport_width, viewport_height),
         );
 
+        // Get content height for scrolling
+        let content_height = layout_tree.dimensions.margin_box_height();
+
         let display_list = build_display_list(&layout_tree);
         let hit_regions = build_hit_regions(&layout_tree);
         drop(dom_ref);
@@ -359,6 +379,9 @@ impl Browser {
             display_list,
             js_runtime,
             hit_regions,
+            scroll_y: 0.0,
+            content_height,
+            viewport_height,
         });
 
         Ok(())
@@ -392,6 +415,12 @@ impl Browser {
                         }
                     }
 
+                    BrowserEvent::MouseWheel { y, .. } => {
+                        // Scroll page (y > 0 = scroll up, y < 0 = scroll down)
+                        let delta = y as f32 * SCROLL_WHEEL_MULTIPLIER;
+                        self.handle_scroll(delta);
+                    }
+
                     BrowserEvent::WindowResize { width, height } => {
                         self.config.width = width;
                         self.config.height = height;
@@ -415,7 +444,10 @@ impl Browser {
     ///
     /// Returns true if the browser should quit.
     fn handle_key(&mut self, scancode: u32) -> bool {
-        use crate::event::{SCANCODE_BACKSPACE, SCANCODE_ESCAPE, SCANCODE_Q, SCANCODE_RETURN};
+        use crate::event::{
+            SCANCODE_BACKSPACE, SCANCODE_DOWN, SCANCODE_END, SCANCODE_ESCAPE, SCANCODE_HOME,
+            SCANCODE_PAGEDOWN, SCANCODE_PAGEUP, SCANCODE_Q, SCANCODE_RETURN, SCANCODE_UP,
+        };
 
         match scancode {
             SCANCODE_ESCAPE | SCANCODE_Q if self.focus != FocusTarget::AddressBar => {
@@ -441,6 +473,37 @@ impl Browser {
                 self.blur_address_bar();
             }
 
+            // Scroll keys (only when not editing address bar)
+            SCANCODE_UP if self.focus != FocusTarget::AddressBar => {
+                self.handle_scroll(SCROLL_LINE_HEIGHT);
+            }
+
+            SCANCODE_DOWN if self.focus != FocusTarget::AddressBar => {
+                self.handle_scroll(-SCROLL_LINE_HEIGHT);
+            }
+
+            SCANCODE_PAGEUP if self.focus != FocusTarget::AddressBar => {
+                if let Some(ref page) = self.page {
+                    let delta = page.viewport_height * SCROLL_PAGE_FACTOR;
+                    self.handle_scroll(delta);
+                }
+            }
+
+            SCANCODE_PAGEDOWN if self.focus != FocusTarget::AddressBar => {
+                if let Some(ref page) = self.page {
+                    let delta = page.viewport_height * SCROLL_PAGE_FACTOR;
+                    self.handle_scroll(-delta);
+                }
+            }
+
+            SCANCODE_HOME if self.focus != FocusTarget::AddressBar => {
+                self.scroll_to_top();
+            }
+
+            SCANCODE_END if self.focus != FocusTarget::AddressBar => {
+                self.scroll_to_bottom();
+            }
+
             _ => {}
         }
 
@@ -453,6 +516,29 @@ impl Browser {
             for c in text.chars() {
                 self.chrome.address_bar.insert_char(c);
             }
+        }
+    }
+
+    /// Handle scroll by delta (positive = scroll up/show content above, negative = scroll down)
+    fn handle_scroll(&mut self, delta: f32) {
+        if let Some(ref mut page) = self.page {
+            let max_scroll = (page.content_height - page.viewport_height).max(0.0);
+            page.scroll_y = (page.scroll_y - delta).clamp(0.0, max_scroll);
+        }
+    }
+
+    /// Scroll to the top of the page
+    fn scroll_to_top(&mut self) {
+        if let Some(ref mut page) = self.page {
+            page.scroll_y = 0.0;
+        }
+    }
+
+    /// Scroll to the bottom of the page
+    fn scroll_to_bottom(&mut self) {
+        if let Some(ref mut page) = self.page {
+            let max_scroll = (page.content_height - page.viewport_height).max(0.0);
+            page.scroll_y = max_scroll;
         }
     }
 
@@ -499,8 +585,10 @@ impl Browser {
         let page_y = y - CHROME_HEIGHT;
         if page_y >= 0.0 {
             if let Some(ref mut page) = self.page {
+                // Adjust for scroll: click at page_y corresponds to content at page_y + scroll_y
+                let content_y = page_y + page.scroll_y;
                 // Hit test page
-                if let Some(node_id) = hit_test_regions(&page.hit_regions, x, page_y) {
+                if let Some(node_id) = hit_test_regions(&page.hit_regions, x, content_y) {
                     log::debug!("Page click on node {}", node_id);
                     // Dispatch click to JS
                     if let Some(ref rt) = page.js_runtime {
@@ -537,65 +625,89 @@ impl Browser {
         let chrome_display_list = self.chrome.build_display_list();
         self.backend.render(&chrome_display_list);
 
-        // Render page content (offset by chrome height)
-        // Clone the display list to avoid borrow issues
-        let page_display_list = self.page.as_ref().map(|p| p.display_list.clone());
-        if let Some(display_list) = page_display_list {
-            self.render_page(&display_list);
+        // Render page content (offset by chrome height and scroll)
+        // Clone the display list and scroll_y to avoid borrow issues
+        let page_data = self.page.as_ref().map(|p| (p.display_list.clone(), p.scroll_y));
+        if let Some((display_list, scroll_y)) = page_data {
+            self.render_page(&display_list, scroll_y);
         }
 
         // Present
         self.backend.present();
     }
 
-    /// Render page content with Y offset
-    fn render_page(&mut self, display_list: &DisplayList) {
+    /// Render page content with Y offset (chrome height) and scroll offset
+    fn render_page(&mut self, display_list: &DisplayList, scroll_y: f32) {
         use gugalanna_layout::Rect;
         use gugalanna_render::PaintCommand;
 
-        // Offset all commands by chrome height
+        // Combined offset: chrome pushes content down, scroll moves it up
+        let y_offset = CHROME_HEIGHT - scroll_y;
+        let viewport_bottom = self.config.height as f32;
+
+        // Offset all commands by combined offset
         let mut offset_commands = Vec::with_capacity(display_list.commands.len());
 
         for cmd in &display_list.commands {
-            let offset_cmd = match cmd {
-                PaintCommand::FillRect { rect, color } => PaintCommand::FillRect {
-                    rect: Rect {
-                        x: rect.x,
-                        y: rect.y + CHROME_HEIGHT,
-                        width: rect.width,
-                        height: rect.height,
-                    },
-                    color: *color,
-                },
+            match cmd {
+                PaintCommand::FillRect { rect, color } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if completely off-screen (above chrome or below viewport)
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::FillRect {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        color: *color,
+                    });
+                }
                 PaintCommand::DrawText {
                     text,
                     x,
                     y,
                     color,
                     font_size,
-                } => PaintCommand::DrawText {
-                    text: text.clone(),
-                    x: *x,
-                    y: *y + CHROME_HEIGHT,
-                    color: *color,
-                    font_size: *font_size,
-                },
+                } => {
+                    let new_y = *y + y_offset;
+                    // Skip if text is off-screen (approximate with font_size as height)
+                    if new_y + *font_size < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::DrawText {
+                        text: text.clone(),
+                        x: *x,
+                        y: new_y,
+                        color: *color,
+                        font_size: *font_size,
+                    });
+                }
                 PaintCommand::DrawBorder {
                     rect,
                     widths,
                     color,
-                } => PaintCommand::DrawBorder {
-                    rect: Rect {
-                        x: rect.x,
-                        y: rect.y + CHROME_HEIGHT,
-                        width: rect.width,
-                        height: rect.height,
-                    },
-                    widths: *widths,
-                    color: *color,
-                },
-            };
-            offset_commands.push(offset_cmd);
+                } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if completely off-screen
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::DrawBorder {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        widths: *widths,
+                        color: *color,
+                    });
+                }
+            }
         }
 
         let offset_list = DisplayList {
