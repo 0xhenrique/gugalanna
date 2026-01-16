@@ -14,11 +14,22 @@ pub enum BrowserEvent {
     /// Mouse wheel scrolled
     MouseWheel { x: i32, y: i32 },
     /// Key pressed
-    KeyDown { scancode: u32 },
+    KeyDown { scancode: u32, modifiers: Modifiers },
     /// Text input (for address bar)
     TextInput { text: String },
     /// Window resize
     WindowResize { width: u32, height: u32 },
+}
+
+/// Keyboard modifier state
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Modifiers {
+    /// Ctrl key is held
+    pub ctrl: bool,
+    /// Alt key is held
+    pub alt: bool,
+    /// Shift key is held
+    pub shift: bool,
 }
 
 /// Mouse button types
@@ -53,6 +64,22 @@ pub const SCANCODE_PAGEDOWN: u32 = 78;
 pub const SCANCODE_HOME: u32 = 74;
 pub const SCANCODE_END: u32 = 77;
 
+// Arrow keys for navigation
+pub const SCANCODE_LEFT: u32 = 80;
+pub const SCANCODE_RIGHT: u32 = 79;
+
+// Letter keys
+pub const SCANCODE_L: u32 = 15;
+pub const SCANCODE_R: u32 = 21;
+
+// Function keys
+pub const SCANCODE_F5: u32 = 62;
+
+// SDL keyboard modifier masks
+const KMOD_CTRL: u16 = 0x00C0;
+const KMOD_ALT: u16 = 0x0300;
+const KMOD_SHIFT: u16 = 0x0003;
+
 // SDL window event subtypes
 const SDL_WINDOWEVENT_CLOSE: u8 = 14;
 const SDL_WINDOWEVENT_SIZE_CHANGED: u8 = 6;
@@ -78,7 +105,13 @@ pub fn poll_events() -> Vec<BrowserEvent> {
                 SDL_KEYDOWN => {
                     let key_event = raw_event.key;
                     let scancode = key_event.keysym.scancode as u32;
-                    events.push(BrowserEvent::KeyDown { scancode });
+                    let mod_state = key_event.keysym.mod_;
+                    let modifiers = Modifiers {
+                        ctrl: (mod_state & KMOD_CTRL) != 0,
+                        alt: (mod_state & KMOD_ALT) != 0,
+                        shift: (mod_state & KMOD_SHIFT) != 0,
+                    };
+                    events.push(BrowserEvent::KeyDown { scancode, modifiers });
                 }
 
                 SDL_TEXTINPUT => {

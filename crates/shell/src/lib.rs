@@ -25,7 +25,7 @@ use gugalanna_net::HttpClient;
 use gugalanna_render::{build_display_list, CursorType, DisplayList, RenderBackend, RenderColor, SdlBackend};
 use gugalanna_style::{Cascade, StyleTree};
 
-use crate::event::{poll_events, start_text_input, stop_text_input, BrowserEvent, MouseButton};
+use crate::event::{poll_events, start_text_input, stop_text_input, BrowserEvent, Modifiers, MouseButton};
 
 /// Browser configuration
 #[derive(Debug, Clone)]
@@ -397,6 +397,41 @@ impl Browser {
         Ok(())
     }
 
+    /// Reload the current page
+    pub fn reload_page(&mut self) {
+        // Get the current URL from navigation history or address bar
+        let url = self
+            .navigation
+            .current_url()
+            .map(|u| u.as_str().to_string())
+            .or_else(|| {
+                let text = &self.chrome.address_bar.text;
+                if !text.is_empty() {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            });
+
+        if let Some(url) = url {
+            log::info!("Reloading page: {}", url);
+            if let Err(e) = self.navigate_async(&url) {
+                log::error!("Reload failed: {}", e);
+            }
+        }
+    }
+
+    /// Stop any in-progress navigation
+    pub fn stop_loading(&mut self) {
+        if let Some(cancel) = self.nav_cancel.take() {
+            log::info!("Cancelling navigation");
+            cancel.cancel();
+        }
+        self.chrome.is_loading = false;
+        self.loading_state = LoadingState::Idle;
+        self.nav_receiver = None;
+    }
+
     /// Reload a URL (for back/forward)
     fn reload_url(&mut self, url: Url) -> Result<(), String> {
         let response = self.fetch_url(&url)?;
@@ -532,8 +567,8 @@ impl Browser {
                         break 'running;
                     }
 
-                    BrowserEvent::KeyDown { scancode } => {
-                        if self.handle_key(scancode) {
+                    BrowserEvent::KeyDown { scancode, modifiers } => {
+                        if self.handle_key(scancode, modifiers) {
                             break 'running;
                         }
                     }
@@ -584,14 +619,73 @@ impl Browser {
     /// Handle a key press
     ///
     /// Returns true if the browser should quit.
-    fn handle_key(&mut self, scancode: u32) -> bool {
+    fn handle_key(&mut self, scancode: u32, modifiers: Modifiers) -> bool {
         use crate::event::{
-            SCANCODE_BACKSPACE, SCANCODE_DOWN, SCANCODE_END, SCANCODE_ESCAPE, SCANCODE_HOME,
-            SCANCODE_PAGEDOWN, SCANCODE_PAGEUP, SCANCODE_Q, SCANCODE_RETURN, SCANCODE_UP,
+            SCANCODE_BACKSPACE, SCANCODE_DOWN, SCANCODE_END, SCANCODE_ESCAPE, SCANCODE_F5,
+            SCANCODE_HOME, SCANCODE_L, SCANCODE_LEFT, SCANCODE_PAGEDOWN, SCANCODE_PAGEUP,
+            SCANCODE_Q, SCANCODE_R, SCANCODE_RETURN, SCANCODE_RIGHT, SCANCODE_UP,
         };
 
+        // Handle keyboard shortcuts with modifiers first
+        match (scancode, modifiers.ctrl, modifiers.alt) {
+            // Ctrl+L: Focus address bar
+            (SCANCODE_L, true, false) => {
+                self.focus_address_bar();
+                // Select all text in address bar
+                self.chrome.address_bar.move_cursor_to_end();
+                return false;
+            }
+
+            // Ctrl+R: Reload page
+            (SCANCODE_R, true, false) => {
+                self.reload_page();
+                return false;
+            }
+
+            // Alt+Left: Go back
+            (SCANCODE_LEFT, false, true) => {
+                if self.chrome.back_button.enabled {
+                    if let Err(e) = self.go_back() {
+                        log::error!("Go back failed: {}", e);
+                    }
+                }
+                return false;
+            }
+
+            // Alt+Right: Go forward
+            (SCANCODE_RIGHT, false, true) => {
+                if self.chrome.forward_button.enabled {
+                    if let Err(e) = self.go_forward() {
+                        log::error!("Go forward failed: {}", e);
+                    }
+                }
+                return false;
+            }
+
+            _ => {}
+        }
+
+        // Handle non-modifier keys
         match scancode {
-            SCANCODE_ESCAPE | SCANCODE_Q if self.focus != FocusTarget::AddressBar => {
+            // F5: Reload page
+            SCANCODE_F5 => {
+                self.reload_page();
+            }
+
+            // Escape: Stop loading or blur address bar
+            SCANCODE_ESCAPE => {
+                if self.chrome.is_loading {
+                    self.stop_loading();
+                } else if self.focus == FocusTarget::AddressBar {
+                    self.blur_address_bar();
+                } else {
+                    // Quit if nothing else to cancel
+                    return true;
+                }
+            }
+
+            // Q: Quit (only when not in address bar)
+            SCANCODE_Q if self.focus != FocusTarget::AddressBar && !modifiers.ctrl => {
                 return true;
             }
 
@@ -607,10 +701,6 @@ impl Browser {
                         log::error!("Navigation failed: {}", e);
                     }
                 }
-                self.blur_address_bar();
-            }
-
-            SCANCODE_ESCAPE if self.focus == FocusTarget::AddressBar => {
                 self.blur_address_bar();
             }
 
