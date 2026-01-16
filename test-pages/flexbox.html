@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Flexbox Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h2 {
+            color: #333;
+            margin-top: 30px;
+            margin-bottom: 10px;
+        }
+        .container {
+            display: flex;
+            width: 400px;
+            height: 150px;
+            background: #ddd;
+            margin-bottom: 20px;
+        }
+        .item {
+            background: #4a90d9;
+            color: white;
+            padding: 15px;
+            margin: 5px;
+        }
+
+        /* Direction tests */
+        .row { flex-direction: row; }
+        .row-reverse { flex-direction: row-reverse; }
+        .column { flex-direction: column; }
+        .column-reverse { flex-direction: column-reverse; }
+
+        /* Justify content tests */
+        .justify-start { justify-content: flex-start; }
+        .justify-end { justify-content: flex-end; }
+        .justify-center { justify-content: center; }
+        .justify-between { justify-content: space-between; }
+        .justify-around { justify-content: space-around; }
+        .justify-evenly { justify-content: space-evenly; }
+
+        /* Align items tests */
+        .align-start { align-items: flex-start; }
+        .align-end { align-items: flex-end; }
+        .align-center { align-items: center; }
+        .align-stretch { align-items: stretch; }
+
+        /* Flex grow/shrink tests */
+        .grow { flex-grow: 1; }
+        .grow-2 { flex-grow: 2; }
+        .no-shrink { flex-shrink: 0; }
+
+        .tall-container {
+            height: 200px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Flexbox Layout Tests</h1>
+
+    <h2>1. flex-direction: row (default)</h2>
+    <div class="container row">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>2. flex-direction: row-reverse</h2>
+    <div class="container row-reverse">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>3. flex-direction: column</h2>
+    <div class="container column tall-container">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>4. justify-content: center</h2>
+    <div class="container row justify-center">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>5. justify-content: space-between</h2>
+    <div class="container row justify-between">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>6. justify-content: space-around</h2>
+    <div class="container row justify-around">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>7. justify-content: space-evenly</h2>
+    <div class="container row justify-evenly">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>8. align-items: center</h2>
+    <div class="container row align-center tall-container">
+        <div class="item">Short</div>
+        <div class="item">Medium text here</div>
+        <div class="item">Tall</div>
+    </div>
+
+    <h2>9. align-items: flex-end</h2>
+    <div class="container row align-end tall-container">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+    </div>
+
+    <h2>10. flex-grow</h2>
+    <div class="container row">
+        <div class="item">Fixed</div>
+        <div class="item grow">Grows (flex-grow: 1)</div>
+        <div class="item">Fixed</div>
+    </div>
+
+    <h2>11. flex-grow: different ratios</h2>
+    <div class="container row">
+        <div class="item grow">1x</div>
+        <div class="item grow-2">2x</div>
+        <div class="item grow">1x</div>
+    </div>
+
+    <h2>12. Combined: center + center</h2>
+    <div class="container row justify-center align-center tall-container">
+        <div class="item">Centered</div>
+        <div class="item">Both</div>
+        <div class="item">Ways</div>
+    </div>
+</body>
+</html>

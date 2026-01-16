@@ -3,8 +3,10 @@
 //! Implements the CSS block formatting context layout algorithm.
 
 use crate::boxtree::LayoutBox;
+use crate::flex::layout_flex;
 use crate::inline::layout_inline_children;
 use crate::ContainingBlock;
+use gugalanna_style::{Display, Position};
 
 /// Layout a block-level element and its descendants
 pub fn layout_block(
@@ -82,10 +84,42 @@ fn calculate_block_position(layout_box: &mut LayoutBox, _containing_block: Conta
     // Y position will be set by parent during child layout
     // For now, just account for top edges
     d.content.y = d.margin.top + d.border.top + d.padding.top;
+
+    // Apply relative positioning offset
+    if let Some(style) = layout_box.style() {
+        if style.position == Position::Relative {
+            // Apply left/right offset (left takes precedence)
+            if let Some(left) = style.left {
+                layout_box.dimensions.content.x += left;
+            } else if let Some(right) = style.right {
+                layout_box.dimensions.content.x -= right;
+            }
+
+            // Apply top/bottom offset (top takes precedence)
+            if let Some(top) = style.top {
+                layout_box.dimensions.content.y += top;
+            } else if let Some(bottom) = style.bottom {
+                layout_box.dimensions.content.y -= bottom;
+            }
+        }
+    }
 }
 
 /// Layout all children of a block element
 fn layout_block_children(layout_box: &mut LayoutBox) {
+    // Check if this is a flex container
+    if let Some(style) = layout_box.style() {
+        if style.display == Display::Flex {
+            // Use flex layout
+            let containing = ContainingBlock::new(
+                layout_box.dimensions.content.width,
+                layout_box.style().and_then(|s| s.height).unwrap_or(0.0),
+            );
+            layout_flex(layout_box, containing);
+            return;
+        }
+    }
+
     // Separate block and inline children
     let has_block_children = layout_box.children.iter().any(|c| c.is_block());
 

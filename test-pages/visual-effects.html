@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Visual Effects Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            font-size: 16px;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-size: 20px;
+            margin-top: 30px;
+            margin-bottom: 10px;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding: 20px;
+            background-color: white;
+        }
+        p {
+            margin: 10px 0;
+        }
+
+        /* Opacity tests */
+        .opacity-full {
+            background-color: blue;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+        }
+        .opacity-75 {
+            opacity: 0.75;
+            background-color: blue;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+        }
+        .opacity-50 {
+            opacity: 0.5;
+            background-color: blue;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+        }
+        .opacity-25 {
+            opacity: 0.25;
+            background-color: blue;
+            color: white;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+        }
+
+        /* Box shadow tests */
+        .shadow-basic {
+            background-color: white;
+            padding: 20px;
+            margin: 20px;
+            display: inline-block;
+            box-shadow: 5px 5px 0px black;
+        }
+        .shadow-blur {
+            background-color: white;
+            padding: 20px;
+            margin: 20px;
+            display: inline-block;
+            box-shadow: 5px 5px 10px gray;
+        }
+        .shadow-spread {
+            background-color: white;
+            padding: 20px;
+            margin: 20px;
+            display: inline-block;
+            box-shadow: 2px 2px 8px 4px gray;
+        }
+        .shadow-color {
+            background-color: white;
+            padding: 20px;
+            margin: 20px;
+            display: inline-block;
+            box-shadow: 4px 4px 12px red;
+        }
+
+        /* Border radius tests */
+        .rounded-small {
+            background-color: coral;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 5px;
+        }
+        .rounded-medium {
+            background-color: coral;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 15px;
+        }
+        .rounded-large {
+            background-color: coral;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 30px;
+        }
+        .rounded-pill {
+            background-color: coral;
+            padding: 15px 30px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 50px;
+        }
+        .rounded-circle {
+            background-color: coral;
+            width: 80px;
+            height: 80px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 50px;
+        }
+        .rounded-asymmetric {
+            background-color: coral;
+            padding: 20px;
+            margin: 10px;
+            display: inline-block;
+            border-top-left-radius: 20px;
+            border-bottom-right-radius: 20px;
+        }
+
+        /* Combined effects */
+        .card {
+            background-color: white;
+            padding: 20px;
+            margin: 20px;
+            display: inline-block;
+            border-radius: 10px;
+            box-shadow: 0px 4px 12px gray;
+        }
+        .card-hover {
+            background-color: white;
+            padding: 20px;
+            margin: 20px;
+            display: inline-block;
+            border-radius: 10px;
+            box-shadow: 0px 8px 24px gray;
+            opacity: 0.95;
+        }
+        .button-style {
+            background-color: blue;
+            color: white;
+            padding: 12px 24px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 6px;
+            box-shadow: 0px 2px 4px gray;
+        }
+        .badge {
+            background-color: red;
+            color: white;
+            padding: 4px 12px;
+            margin: 10px;
+            display: inline-block;
+            border-radius: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Visual Effects Test</h1>
+
+    <div class="section">
+        <h2>Opacity</h2>
+        <p>Boxes with decreasing opacity (100%, 75%, 50%, 25%):</p>
+        <div class="opacity-full">100%</div>
+        <div class="opacity-75">75%</div>
+        <div class="opacity-50">50%</div>
+        <div class="opacity-25">25%</div>
+    </div>
+
+    <div class="section">
+        <h2>Box Shadow</h2>
+        <p>Different shadow styles:</p>
+        <div class="shadow-basic">Basic (no blur)</div>
+        <div class="shadow-blur">With blur</div>
+        <div class="shadow-spread">With spread</div>
+        <div class="shadow-color">Red shadow</div>
+    </div>
+
+    <div class="section">
+        <h2>Border Radius</h2>
+        <p>Different corner rounding:</p>
+        <div class="rounded-small">5px</div>
+        <div class="rounded-medium">15px</div>
+        <div class="rounded-large">30px</div>
+        <div class="rounded-pill">Pill shape</div>
+        <div class="rounded-circle"></div>
+        <div class="rounded-asymmetric">Asymmetric</div>
+    </div>
+
+    <div class="section">
+        <h2>Combined Effects</h2>
+        <p>Card-like components combining multiple effects:</p>
+        <div class="card">
+            <strong>Card</strong><br>
+            Rounded corners + shadow
+        </div>
+        <div class="card-hover">
+            <strong>Elevated Card</strong><br>
+            Bigger shadow + opacity
+        </div>
+        <div class="button-style">Button Style</div>
+        <div class="badge">Badge</div>
+    </div>
+</body>
+</html>

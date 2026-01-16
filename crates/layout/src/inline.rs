@@ -5,7 +5,7 @@
 use crate::boxtree::{LayoutBox, BoxType, InputType, ImageData};
 use crate::text::measure_text;
 use crate::Rect;
-use gugalanna_style::ComputedStyle;
+use gugalanna_style::{ComputedStyle, Position};
 
 /// A line box containing inline content
 #[derive(Debug)]
@@ -71,6 +71,25 @@ pub fn layout_inline_children(parent: &mut LayoutBox) {
         child.dimensions.content.x = cursor_x;
         child.dimensions.content.y = cursor_y;
 
+        // Apply relative positioning offset
+        if let Some(style) = child.style() {
+            if style.position == Position::Relative {
+                // Apply left/right offset (left takes precedence)
+                if let Some(left) = style.left {
+                    child.dimensions.content.x += left;
+                } else if let Some(right) = style.right {
+                    child.dimensions.content.x -= right;
+                }
+
+                // Apply top/bottom offset (top takes precedence)
+                if let Some(top) = style.top {
+                    child.dimensions.content.y += top;
+                } else if let Some(bottom) = style.bottom {
+                    child.dimensions.content.y -= bottom;
+                }
+            }
+        }
+
         // Update cursor
         cursor_x += child_width;
         max_width = max_width.max(cursor_x);
@@ -104,12 +123,30 @@ fn layout_inline_box(layout_box: &mut LayoutBox, _available_width: f32) -> (f32,
             // Apply style edges
             layout_box.apply_style_edges();
 
-            // For inline elements, set a large available width so children don't wrap
-            // The inline element will shrink-wrap to its content
-            layout_box.dimensions.content.width = f32::MAX;
+            // Check for inline-block with explicit dimensions
+            let style = layout_box.style();
+            let has_explicit_width = style.as_ref().and_then(|s| s.width).is_some();
+            let has_explicit_height = style.as_ref().and_then(|s| s.height).is_some();
+            let is_inline_block = style.as_ref().map(|s| s.display == gugalanna_style::Display::InlineBlock).unwrap_or(false);
 
-            // Layout children
-            layout_inline_children(layout_box);
+            if is_inline_block && has_explicit_width {
+                // Use explicit width for inline-block
+                layout_box.dimensions.content.width = style.as_ref().unwrap().width.unwrap();
+            } else {
+                // For inline elements, set a large available width so children don't wrap
+                // The inline element will shrink-wrap to its content
+                layout_box.dimensions.content.width = f32::MAX;
+            }
+
+            if is_inline_block && has_explicit_height {
+                // Use explicit height for inline-block
+                layout_box.dimensions.content.height = style.as_ref().unwrap().height.unwrap();
+            }
+
+            // Layout children (if any)
+            if !layout_box.children.is_empty() {
+                layout_inline_children(layout_box);
+            }
 
             let width = layout_box.dimensions.margin_box_width();
             let height = layout_box.dimensions.margin_box_height();

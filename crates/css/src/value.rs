@@ -28,6 +28,8 @@ pub enum CssValue {
     List(Vec<CssValue>),
     /// Comma-separated values
     CommaSeparated(Vec<CssValue>),
+    /// Time value (for transitions/animations)
+    Time(f32, TimeUnit),
 }
 
 /// Length units
@@ -61,6 +63,34 @@ pub enum LengthUnit {
     Ch,
     /// x-height (height of 'x')
     Ex,
+}
+
+/// Time units for animations and transitions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeUnit {
+    /// Seconds
+    S,
+    /// Milliseconds
+    Ms,
+}
+
+impl TimeUnit {
+    /// Parse a unit string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "s" => Some(TimeUnit::S),
+            "ms" => Some(TimeUnit::Ms),
+            _ => None,
+        }
+    }
+
+    /// Convert to milliseconds
+    pub fn to_ms(&self, value: f32) -> f32 {
+        match self {
+            TimeUnit::S => value * 1000.0,
+            TimeUnit::Ms => value,
+        }
+    }
 }
 
 impl LengthUnit {
@@ -383,7 +413,10 @@ impl ValueParser {
             Token::Number(n) => Ok(CssValue::Number(*n)),
             Token::Percentage(n) => Ok(CssValue::Percentage(*n)),
             Token::Dimension(n, unit) => {
-                if let Some(length_unit) = LengthUnit::from_str(unit) {
+                // Try time units first (s, ms)
+                if let Some(time_unit) = TimeUnit::from_str(unit) {
+                    Ok(CssValue::Time(*n, time_unit))
+                } else if let Some(length_unit) = LengthUnit::from_str(unit) {
                     Ok(CssValue::Length(*n, length_unit))
                 } else {
                     // Unknown unit - treat as keyword for now
@@ -558,6 +591,22 @@ mod tests {
         assert_eq!(LengthUnit::from_str("REM"), Some(LengthUnit::Rem));
         assert_eq!(LengthUnit::from_str("vw"), Some(LengthUnit::Vw));
         assert_eq!(LengthUnit::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_time_unit_parse() {
+        assert_eq!(TimeUnit::from_str("s"), Some(TimeUnit::S));
+        assert_eq!(TimeUnit::from_str("ms"), Some(TimeUnit::Ms));
+        assert_eq!(TimeUnit::from_str("S"), Some(TimeUnit::S));
+        assert_eq!(TimeUnit::from_str("MS"), Some(TimeUnit::Ms));
+        assert_eq!(TimeUnit::from_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_time_unit_to_ms() {
+        assert_eq!(TimeUnit::S.to_ms(1.0), 1000.0);
+        assert_eq!(TimeUnit::S.to_ms(0.5), 500.0);
+        assert_eq!(TimeUnit::Ms.to_ms(300.0), 300.0);
     }
 
     #[test]

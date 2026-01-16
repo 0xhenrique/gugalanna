@@ -8,6 +8,7 @@ mod form;
 mod image_loader;
 mod loading;
 mod navigation;
+mod transition;
 
 pub use chrome::{Chrome, ChromeHit, CHROME_HEIGHT};
 pub use loading::{LoadingState, NavigationError, NavigationResult};
@@ -15,8 +16,11 @@ pub use navigation::NavigationState;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use url::Url;
+
+use crate::transition::TransitionManager;
 
 use gugalanna_css::Stylesheet;
 use gugalanna_dom::{DomTree, NodeId, Queryable};
@@ -180,6 +184,10 @@ pub struct Browser {
     http_client: HttpClient,
     /// Current cursor type
     current_cursor: CursorType,
+    /// Transition manager for CSS transitions
+    transition_manager: TransitionManager,
+    /// Last frame timestamp for delta time calculation
+    last_frame: Instant,
 }
 
 impl Browser {
@@ -210,6 +218,8 @@ impl Browser {
             focus: FocusTarget::None,
             http_client,
             current_cursor: CursorType::Arrow,
+            transition_manager: TransitionManager::new(),
+            last_frame: Instant::now(),
         })
     }
 
@@ -868,7 +878,14 @@ impl Browser {
 
     /// Run the browser event loop
     pub fn run(&mut self) -> Result<(), String> {
+        self.last_frame = Instant::now();
+
         'running: loop {
+            // Calculate delta time for animations
+            let now = Instant::now();
+            let delta_ms = now.duration_since(self.last_frame).as_secs_f32() * 1000.0;
+            self.last_frame = now;
+
             // Poll for navigation completion
             self.poll_navigation();
 
@@ -918,6 +935,9 @@ impl Browser {
                     }
                 }
             }
+
+            // Tick CSS transitions
+            let _transitions_active = self.transition_manager.tick(delta_ms);
 
             // Update loading animation
             self.chrome.tick_loading();
@@ -2097,6 +2117,117 @@ impl Browser {
                         },
                         pixels: pixels.clone(),
                         alt: alt.clone(),
+                    });
+                }
+                PaintCommand::SetClipRect(rect) => {
+                    // Offset the clip rect for scroll position
+                    let new_y = rect.y + y_offset;
+                    offset_commands.push(PaintCommand::SetClipRect(Rect {
+                        x: rect.x,
+                        y: new_y,
+                        width: rect.width,
+                        height: rect.height,
+                    }));
+                }
+                PaintCommand::ClearClipRect => {
+                    offset_commands.push(PaintCommand::ClearClipRect);
+                }
+                PaintCommand::PushOpacity(opacity) => {
+                    offset_commands.push(PaintCommand::PushOpacity(*opacity));
+                }
+                PaintCommand::PopOpacity => {
+                    offset_commands.push(PaintCommand::PopOpacity);
+                }
+                PaintCommand::DrawBoxShadow { rect, shadow } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen
+                    if new_y + rect.height + shadow.blur_radius + shadow.spread_radius < CHROME_HEIGHT
+                        || new_y - shadow.blur_radius - shadow.spread_radius > viewport_bottom
+                    {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::DrawBoxShadow {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        shadow: shadow.clone(),
+                    });
+                }
+                PaintCommand::FillRoundedRect { rect, radius, color } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::FillRoundedRect {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        radius: *radius,
+                        color: *color,
+                    });
+                }
+                PaintCommand::DrawRoundedBorder { rect, radius, widths, color } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::DrawRoundedBorder {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        radius: *radius,
+                        widths: *widths,
+                        color: *color,
+                    });
+                }
+                PaintCommand::FillLinearGradient { rect, direction, stops, radius } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::FillLinearGradient {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        direction: direction.clone(),
+                        stops: stops.clone(),
+                        radius: *radius,
+                    });
+                }
+                PaintCommand::FillRadialGradient { rect, shape, size, center_x, center_y, stops, radius } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::FillRadialGradient {
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        shape: *shape,
+                        size: *size,
+                        center_x: *center_x,
+                        center_y: *center_y,
+                        stops: stops.clone(),
+                        radius: *radius,
                     });
                 }
             }

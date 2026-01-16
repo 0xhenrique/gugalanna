@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Positioning Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            font-size: 16px;
+            margin: 20px;
+            background-color: white;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-size: 20px;
+            margin-top: 30px;
+            margin-bottom: 10px;
+        }
+        .section {
+            margin-bottom: 30px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+        p {
+            margin: 10px 0;
+        }
+
+        /* Position: relative tests */
+        .relative-container {
+            background-color: #e0e0e0;
+            padding: 20px;
+            height: 80px;
+        }
+        .relative-box {
+            position: relative;
+            left: 30px;
+            top: 10px;
+            background-color: lightblue;
+            padding: 10px;
+            display: inline-block;
+        }
+        .relative-right {
+            position: relative;
+            right: 20px;
+            background-color: lightcoral;
+            padding: 10px;
+            display: inline-block;
+        }
+        .relative-bottom {
+            position: relative;
+            bottom: 10px;
+            background-color: lightgreen;
+            padding: 10px;
+            display: inline-block;
+        }
+
+        /* Z-index tests */
+        .z-container {
+            position: relative;
+            height: 120px;
+            background-color: #e0e0e0;
+        }
+        .z-box {
+            position: relative;
+            width: 100px;
+            height: 60px;
+            padding: 10px;
+            color: white;
+        }
+        .z-low {
+            z-index: 1;
+            background-color: blue;
+            left: 0px;
+            top: 0px;
+        }
+        .z-mid {
+            z-index: 5;
+            background-color: green;
+            left: 50px;
+            top: -40px;
+        }
+        .z-high {
+            z-index: 10;
+            background-color: red;
+            left: 100px;
+            top: -80px;
+        }
+
+        /* Overflow tests */
+        .overflow-container {
+            overflow: hidden;
+            width: 200px;
+            height: 60px;
+            background-color: lightyellow;
+            border: 2px solid orange;
+        }
+        .overflow-content {
+            width: 400px;
+            background-color: lightpink;
+            padding: 10px;
+        }
+        .overflow-visible {
+            overflow: visible;
+            width: 200px;
+            height: 60px;
+            background-color: lightcyan;
+            border: 2px solid teal;
+            margin-bottom: 80px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Positioning Test</h1>
+
+    <div class="section">
+        <h2>Position: Relative with left/top</h2>
+        <p>The blue box should be shifted 30px right and 10px down from its normal position:</p>
+        <div class="relative-container">
+            <span class="relative-box">Relative (left:30px, top:10px)</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Position: Relative with right/bottom</h2>
+        <p>The coral box uses right:20px, green uses bottom:10px:</p>
+        <div class="relative-container">
+            <span class="relative-right">Relative (right:20px)</span>
+            <span class="relative-bottom">Relative (bottom:10px)</span>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Z-Index Stacking Order</h2>
+        <p>Three overlapping boxes. Red (z-index:10) should be on top, then green (z-index:5), then blue (z-index:1):</p>
+        <div class="z-container">
+            <div class="z-box z-low">Blue z:1</div>
+            <div class="z-box z-mid">Green z:5</div>
+            <div class="z-box z-high">Red z:10</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Overflow: Hidden</h2>
+        <p>The pink content is wider than its container. Only 200px should be visible:</p>
+        <div class="overflow-container">
+            <div class="overflow-content">This is a very long line of text that should be clipped because overflow is hidden</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Overflow: Visible (default)</h2>
+        <p>Same content but with overflow:visible (the default). Content should overflow:</p>
+        <div class="overflow-visible">
+            <div class="overflow-content">This is a very long line of text that should overflow because overflow is visible</div>
+        </div>
+    </div>
+</body>
+</html>

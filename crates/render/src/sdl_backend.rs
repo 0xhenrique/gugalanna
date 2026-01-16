@@ -9,7 +9,10 @@ use sdl2::render::{BlendMode, Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use sdl2::Sdl;
 
-use crate::display_list::{DisplayList, PaintCommand};
+use gugalanna_layout::Rect;
+use gugalanna_style::{BorderRadius, BoxShadow, ColorStop, GradientDirection, RadialShape, RadialSize};
+
+use crate::display_list::{BorderWidths, DisplayList, PaintCommand};
 use crate::font::FontCache;
 use crate::paint::RenderColor;
 use crate::RenderBackend;
@@ -31,6 +34,8 @@ pub struct SdlBackend {
     height: u32,
     cursor_arrow: Cursor,
     cursor_hand: Cursor,
+    /// Stack of opacity modifiers (multiplied together)
+    opacity_stack: Vec<f32>,
 }
 
 impl SdlBackend {
@@ -71,6 +76,7 @@ impl SdlBackend {
             height,
             cursor_arrow,
             cursor_hand,
+            opacity_stack: Vec::new(),
         })
     }
 
@@ -102,7 +108,7 @@ impl SdlBackend {
     /// Draw text at a position
     fn draw_text(&mut self, text: &str, x: f32, y: f32, color: RenderColor, font_size: f32) {
         let mut cursor_x = x as i32;
-        let baseline_y = y as i32 + self.font_cache.ascent(font_size) as i32;
+        let baseline_y = (y as i32).saturating_add(self.font_cache.ascent(font_size) as i32);
 
         // Pre-rasterize all glyphs and collect their data
         let glyphs: Vec<_> = text.chars().map(|c| {
@@ -120,8 +126,8 @@ impl SdlBackend {
         // Now draw them
         for (width, height, bitmap, advance_width, offset_x, offset_y) in glyphs {
             if width > 0 && height > 0 {
-                let glyph_x = cursor_x + offset_x;
-                let glyph_y = baseline_y - offset_y - height as i32;
+                let glyph_x = cursor_x.saturating_add(offset_x);
+                let glyph_y = baseline_y.saturating_sub(offset_y).saturating_sub(height as i32);
 
                 self.draw_glyph_bitmap(
                     &bitmap,
@@ -133,7 +139,7 @@ impl SdlBackend {
                 );
             }
 
-            cursor_x += advance_width as i32;
+            cursor_x = cursor_x.saturating_add(advance_width as i32);
         }
     }
 
@@ -466,6 +472,593 @@ impl SdlBackend {
             self.draw_text(&text, text_x.max(rect.x + 4.0), text_y.max(rect.y + 4.0), RenderColor::rgb(128, 128, 128), 14.0);
         }
     }
+
+    /// Get the current opacity (product of all stacked opacities)
+    fn current_opacity(&self) -> f32 {
+        self.opacity_stack.iter().fold(1.0, |acc, &o| acc * o)
+    }
+
+    /// Apply current opacity to a color
+    fn apply_opacity(&self, color: RenderColor) -> RenderColor {
+        let opacity = self.current_opacity();
+        if opacity >= 1.0 {
+            return color;
+        }
+        RenderColor {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+            a: (color.a as f32 * opacity) as u8,
+        }
+    }
+
+    /// Draw a box shadow using layered rectangles
+    fn draw_box_shadow(&mut self, rect: &gugalanna_layout::Rect, shadow: &BoxShadow) {
+        // Calculate shadow position
+        let base_x = rect.x + shadow.offset_x;
+        let base_y = rect.y + shadow.offset_y;
+
+        // Expand rect by spread radius
+        let shadow_rect = gugalanna_layout::Rect::new(
+            base_x - shadow.spread_radius,
+            base_y - shadow.spread_radius,
+            rect.width + 2.0 * shadow.spread_radius,
+            rect.height + 2.0 * shadow.spread_radius,
+        );
+
+        // Convert shadow color to RenderColor
+        let shadow_color = RenderColor {
+            r: shadow.color.r,
+            g: shadow.color.g,
+            b: shadow.color.b,
+            a: shadow.color.a,
+        };
+
+        // If no blur, just draw a solid shadow
+        if shadow.blur_radius <= 0.0 {
+            let color = self.apply_opacity(shadow_color);
+            self.draw_rect(
+                shadow_rect.x as i32,
+                shadow_rect.y as i32,
+                shadow_rect.width as u32,
+                shadow_rect.height as u32,
+                color,
+            );
+            return;
+        }
+
+        // Draw blur layers (outer to inner, each smaller with more alpha)
+        let layers = (shadow.blur_radius / 2.0).max(1.0).min(20.0) as i32;
+        for i in (0..layers).rev() {
+            let t = i as f32 / layers as f32;
+            let expansion = t * shadow.blur_radius;
+            // Alpha decreases from outside to inside
+            let alpha = (shadow_color.a as f32 * (1.0 - t * 0.7)) as u8;
+
+            let layer_rect = gugalanna_layout::Rect::new(
+                shadow_rect.x - expansion,
+                shadow_rect.y - expansion,
+                shadow_rect.width + 2.0 * expansion,
+                shadow_rect.height + 2.0 * expansion,
+            );
+
+            let color = self.apply_opacity(RenderColor {
+                r: shadow_color.r,
+                g: shadow_color.g,
+                b: shadow_color.b,
+                a: alpha / layers as u8, // Divide by layers for softer effect
+            });
+
+            self.draw_rect(
+                layer_rect.x as i32,
+                layer_rect.y as i32,
+                layer_rect.width as u32,
+                layer_rect.height as u32,
+                color,
+            );
+        }
+    }
+
+    /// Draw a filled rounded rectangle
+    fn draw_rounded_rect(
+        &mut self,
+        rect: &gugalanna_layout::Rect,
+        radius: &BorderRadius,
+        color: RenderColor,
+    ) {
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width;
+        let h = rect.height;
+
+        // Clamp radii to half the dimensions
+        let max_radius = (w / 2.0).min(h / 2.0);
+        let tl = radius.top_left.min(max_radius);
+        let tr = radius.top_right.min(max_radius);
+        let br = radius.bottom_right.min(max_radius);
+        let bl = radius.bottom_left.min(max_radius);
+
+        let color = self.apply_opacity(color);
+
+        // If all radii are 0, just draw a regular rect
+        if tl <= 0.0 && tr <= 0.0 && br <= 0.0 && bl <= 0.0 {
+            self.draw_rect(x, y, w as u32, h as u32, color);
+            return;
+        }
+
+        // Draw the main rectangle body (center region)
+        let max_top = tl.max(tr);
+        let max_bottom = bl.max(br);
+        let max_left = tl.max(bl);
+        let max_right = tr.max(br);
+
+        // Center horizontal bar
+        self.draw_rect(
+            x + max_left as i32,
+            y,
+            (w - max_left - max_right) as u32,
+            h as u32,
+            color,
+        );
+
+        // Left bar
+        self.draw_rect(
+            x,
+            y + max_top as i32,
+            max_left as u32,
+            (h - max_top - max_bottom) as u32,
+            color,
+        );
+
+        // Right bar
+        self.draw_rect(
+            x + (w - max_right) as i32,
+            y + max_top as i32,
+            max_right as u32,
+            (h - max_top - max_bottom) as u32,
+            color,
+        );
+
+        // Draw corner quarters using filled circles (scanlines)
+        // Top-left corner
+        if tl > 0.0 {
+            self.fill_quarter_circle(x + tl as i32, y + tl as i32, tl, 0, color);
+        }
+        // Top-right corner
+        if tr > 0.0 {
+            self.fill_quarter_circle(x + (w - tr) as i32, y + tr as i32, tr, 1, color);
+        }
+        // Bottom-right corner
+        if br > 0.0 {
+            self.fill_quarter_circle(x + (w - br) as i32, y + (h - br) as i32, br, 2, color);
+        }
+        // Bottom-left corner
+        if bl > 0.0 {
+            self.fill_quarter_circle(x + bl as i32, y + (h - bl) as i32, bl, 3, color);
+        }
+    }
+
+    /// Fill a quarter circle using horizontal scanlines
+    /// quadrant: 0=top-left, 1=top-right, 2=bottom-right, 3=bottom-left
+    fn fill_quarter_circle(&mut self, cx: i32, cy: i32, r: f32, quadrant: u8, color: RenderColor) {
+        let r_int = r as i32;
+        let r_sq = r * r;
+
+        for dy in 0..=r_int {
+            let dx = ((r_sq - (dy as f32 * dy as f32)).sqrt()) as i32;
+
+            let (line_x, line_y, line_w) = match quadrant {
+                0 => (cx - dx, cy - dy, dx as u32),           // top-left
+                1 => (cx, cy - dy, dx as u32),                 // top-right
+                2 => (cx, cy + dy, dx as u32),                 // bottom-right
+                3 => (cx - dx, cy + dy, dx as u32),           // bottom-left
+                _ => continue,
+            };
+
+            if line_w > 0 {
+                self.draw_rect(line_x, line_y, line_w, 1, color);
+            }
+        }
+    }
+
+    /// Draw a rounded border
+    fn draw_rounded_border(
+        &mut self,
+        rect: &gugalanna_layout::Rect,
+        radius: &BorderRadius,
+        widths: &BorderWidths,
+        color: RenderColor,
+    ) {
+        // For now, draw outer rounded rect minus inner rounded rect
+        // This is a simplified approach - proper rounded borders are complex
+
+        let color = self.apply_opacity(color);
+
+        // Draw the border sides (simplified - not truly rounded at corners)
+        // Top border
+        if widths.top > 0.0 {
+            self.draw_rect(
+                rect.x as i32 + radius.top_left as i32,
+                rect.y as i32,
+                (rect.width - radius.top_left - radius.top_right) as u32,
+                widths.top as u32,
+                color,
+            );
+        }
+
+        // Bottom border
+        if widths.bottom > 0.0 {
+            self.draw_rect(
+                rect.x as i32 + radius.bottom_left as i32,
+                (rect.y + rect.height - widths.bottom) as i32,
+                (rect.width - radius.bottom_left - radius.bottom_right) as u32,
+                widths.bottom as u32,
+                color,
+            );
+        }
+
+        // Left border
+        if widths.left > 0.0 {
+            self.draw_rect(
+                rect.x as i32,
+                rect.y as i32 + radius.top_left as i32,
+                widths.left as u32,
+                (rect.height - radius.top_left - radius.bottom_left) as u32,
+                color,
+            );
+        }
+
+        // Right border
+        if widths.right > 0.0 {
+            self.draw_rect(
+                (rect.x + rect.width - widths.right) as i32,
+                rect.y as i32 + radius.top_right as i32,
+                widths.right as u32,
+                (rect.height - radius.top_right - radius.bottom_right) as u32,
+                color,
+            );
+        }
+
+        // Draw corner arcs (simplified as quarter rings using multiple circles)
+        let border_width = widths.top.max(widths.right).max(widths.bottom).max(widths.left);
+        if border_width > 0.0 {
+            // Top-left arc
+            if radius.top_left > 0.0 {
+                self.draw_quarter_arc(
+                    rect.x as i32 + radius.top_left as i32,
+                    rect.y as i32 + radius.top_left as i32,
+                    radius.top_left,
+                    radius.top_left - border_width,
+                    0,
+                    color,
+                );
+            }
+            // Top-right arc
+            if radius.top_right > 0.0 {
+                self.draw_quarter_arc(
+                    (rect.x + rect.width - radius.top_right) as i32,
+                    rect.y as i32 + radius.top_right as i32,
+                    radius.top_right,
+                    radius.top_right - border_width,
+                    1,
+                    color,
+                );
+            }
+            // Bottom-right arc
+            if radius.bottom_right > 0.0 {
+                self.draw_quarter_arc(
+                    (rect.x + rect.width - radius.bottom_right) as i32,
+                    (rect.y + rect.height - radius.bottom_right) as i32,
+                    radius.bottom_right,
+                    radius.bottom_right - border_width,
+                    2,
+                    color,
+                );
+            }
+            // Bottom-left arc
+            if radius.bottom_left > 0.0 {
+                self.draw_quarter_arc(
+                    rect.x as i32 + radius.bottom_left as i32,
+                    (rect.y + rect.height - radius.bottom_left) as i32,
+                    radius.bottom_left,
+                    radius.bottom_left - border_width,
+                    3,
+                    color,
+                );
+            }
+        }
+    }
+
+    /// Draw a quarter arc (ring segment) using horizontal scanlines
+    fn draw_quarter_arc(
+        &mut self,
+        cx: i32,
+        cy: i32,
+        outer_r: f32,
+        inner_r: f32,
+        quadrant: u8,
+        color: RenderColor,
+    ) {
+        let outer_r_int = outer_r as i32;
+        let outer_r_sq = outer_r * outer_r;
+        let inner_r_sq = inner_r.max(0.0) * inner_r.max(0.0);
+
+        for dy in 0..=outer_r_int {
+            let dy_sq = (dy as f32) * (dy as f32);
+            let outer_dx = ((outer_r_sq - dy_sq).max(0.0).sqrt()) as i32;
+            let inner_dx = if inner_r > 0.0 {
+                ((inner_r_sq - dy_sq).max(0.0).sqrt()) as i32
+            } else {
+                0
+            };
+
+            let line_width = (outer_dx - inner_dx) as u32;
+            if line_width == 0 {
+                continue;
+            }
+
+            let (line_x, line_y) = match quadrant {
+                0 => (cx - outer_dx, cy - dy),       // top-left
+                1 => (cx + inner_dx, cy - dy),        // top-right
+                2 => (cx + inner_dx, cy + dy),        // bottom-right
+                3 => (cx - outer_dx, cy + dy),       // bottom-left
+                _ => continue,
+            };
+
+            self.draw_rect(line_x, line_y, line_width, 1, color);
+        }
+    }
+
+    /// Draw a linear gradient
+    fn draw_linear_gradient(
+        &mut self,
+        rect: &Rect,
+        direction: &GradientDirection,
+        stops: &[ColorStop],
+        _radius: Option<&BorderRadius>,
+    ) {
+        if stops.len() < 2 {
+            return;
+        }
+
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width as i32;
+        let h = rect.height as i32;
+
+        // Normalize color stops (distribute auto positions)
+        let normalized = Self::normalize_color_stops(stops);
+
+        // Calculate gradient direction vector
+        let (is_vertical, is_horizontal) = match direction {
+            GradientDirection::ToBottom | GradientDirection::ToTop => (true, false),
+            GradientDirection::ToRight | GradientDirection::ToLeft => (false, true),
+            GradientDirection::Angle(deg) => {
+                // For angled gradients, we'll approximate with scanlines
+                let rad = deg.to_radians();
+                let dy = -rad.cos();
+                let dx = rad.sin();
+                // If mostly vertical or horizontal, use that
+                if dy.abs() > dx.abs() {
+                    (true, false)
+                } else {
+                    (false, true)
+                }
+            }
+            _ => (true, false), // Default to vertical for diagonal directions
+        };
+
+        let reverse = matches!(direction, GradientDirection::ToTop | GradientDirection::ToLeft);
+
+        if is_vertical {
+            // Vertical gradient - draw horizontal lines
+            for row in 0..h {
+                let t = if h > 1 {
+                    row as f32 / (h - 1) as f32
+                } else {
+                    0.5
+                };
+                let t = if reverse { 1.0 - t } else { t };
+                let color = Self::interpolate_color(&normalized, t);
+                let final_color = self.apply_opacity(color);
+                self.canvas.set_draw_color(SdlColor::RGBA(
+                    final_color.r,
+                    final_color.g,
+                    final_color.b,
+                    final_color.a,
+                ));
+                let _ = self.canvas.fill_rect(SdlRect::new(x, y + row, w as u32, 1));
+            }
+        } else if is_horizontal {
+            // Horizontal gradient - draw vertical lines
+            for col in 0..w {
+                let t = if w > 1 {
+                    col as f32 / (w - 1) as f32
+                } else {
+                    0.5
+                };
+                let t = if reverse { 1.0 - t } else { t };
+                let color = Self::interpolate_color(&normalized, t);
+                let final_color = self.apply_opacity(color);
+                self.canvas.set_draw_color(SdlColor::RGBA(
+                    final_color.r,
+                    final_color.g,
+                    final_color.b,
+                    final_color.a,
+                ));
+                let _ = self.canvas.fill_rect(SdlRect::new(x + col, y, 1, h as u32));
+            }
+        }
+
+        // Note: border-radius not applied for gradients in this basic implementation
+    }
+
+    /// Draw a radial gradient
+    fn draw_radial_gradient(
+        &mut self,
+        rect: &Rect,
+        _shape: &RadialShape,
+        _size: &RadialSize,
+        center_x: f32,
+        center_y: f32,
+        stops: &[ColorStop],
+        _radius: Option<&BorderRadius>,
+    ) {
+        if stops.len() < 2 {
+            return;
+        }
+
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width as i32;
+        let h = rect.height as i32;
+
+        // Center point in absolute pixels
+        let cx = rect.x + rect.width * center_x;
+        let cy = rect.y + rect.height * center_y;
+
+        // Maximum radius (distance to farthest corner)
+        let corners = [
+            (rect.x, rect.y),
+            (rect.x + rect.width, rect.y),
+            (rect.x, rect.y + rect.height),
+            (rect.x + rect.width, rect.y + rect.height),
+        ];
+        let max_radius = corners.iter()
+            .map(|(px, py)| {
+                let dx = px - cx;
+                let dy = py - cy;
+                (dx * dx + dy * dy).sqrt()
+            })
+            .fold(0.0_f32, f32::max);
+
+        // Normalize color stops
+        let normalized = Self::normalize_color_stops(stops);
+
+        // Draw pixel by pixel (simple but slow approach)
+        for row in 0..h {
+            for col in 0..w {
+                let px = x + col;
+                let py = y + row;
+
+                // Distance from center
+                let dx = px as f32 - cx;
+                let dy = py as f32 - cy;
+                let distance = (dx * dx + dy * dy).sqrt();
+
+                // Normalize to 0..1
+                let t = if max_radius > 0.0 {
+                    (distance / max_radius).min(1.0)
+                } else {
+                    0.0
+                };
+
+                let color = Self::interpolate_color(&normalized, t);
+                let final_color = self.apply_opacity(color);
+                self.canvas.set_draw_color(SdlColor::RGBA(
+                    final_color.r,
+                    final_color.g,
+                    final_color.b,
+                    final_color.a,
+                ));
+                let _ = self.canvas.draw_point((px, py));
+            }
+        }
+    }
+
+    /// Normalize color stops by distributing auto positions
+    fn normalize_color_stops(stops: &[ColorStop]) -> Vec<(f32, RenderColor)> {
+        let mut result = Vec::with_capacity(stops.len());
+
+        // First pass: collect known positions
+        let mut positions: Vec<Option<f32>> = stops.iter()
+            .map(|s| s.position)
+            .collect();
+
+        // Ensure first and last have positions
+        if positions.first().map(|p| p.is_none()).unwrap_or(true) {
+            positions[0] = Some(0.0);
+        }
+        if positions.last().map(|p| p.is_none()).unwrap_or(true) {
+            let last = positions.len() - 1;
+            positions[last] = Some(1.0);
+        }
+
+        // Interpolate missing positions
+        let mut i = 0;
+        while i < positions.len() {
+            if positions[i].is_none() {
+                // Find next known position
+                let start_idx = i - 1;
+                let start_pos = positions[start_idx].unwrap();
+
+                let mut end_idx = i + 1;
+                while end_idx < positions.len() && positions[end_idx].is_none() {
+                    end_idx += 1;
+                }
+                let end_pos = positions[end_idx].unwrap();
+
+                // Distribute positions evenly
+                let count = end_idx - start_idx;
+                for j in i..end_idx {
+                    let frac = (j - start_idx) as f32 / count as f32;
+                    positions[j] = Some(start_pos + (end_pos - start_pos) * frac);
+                }
+                i = end_idx;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Build result
+        for (stop, pos) in stops.iter().zip(positions.iter()) {
+            let color: RenderColor = stop.color.into();
+            result.push((pos.unwrap_or(0.0), color));
+        }
+
+        result
+    }
+
+    /// Interpolate between color stops at position t (0.0 to 1.0)
+    fn interpolate_color(stops: &[(f32, RenderColor)], t: f32) -> RenderColor {
+        if stops.is_empty() {
+            return RenderColor::black();
+        }
+        if stops.len() == 1 {
+            return stops[0].1;
+        }
+
+        let t = t.clamp(0.0, 1.0);
+
+        // Find surrounding stops
+        let mut prev = &stops[0];
+        let mut next = &stops[stops.len() - 1];
+
+        for i in 0..stops.len() - 1 {
+            if stops[i].0 <= t && t <= stops[i + 1].0 {
+                prev = &stops[i];
+                next = &stops[i + 1];
+                break;
+            }
+        }
+
+        // Interpolate between stops
+        let range = next.0 - prev.0;
+        let local_t = if range > 0.0 { (t - prev.0) / range } else { 0.0 };
+
+        RenderColor {
+            r: Self::lerp_u8(prev.1.r, next.1.r, local_t),
+            g: Self::lerp_u8(prev.1.g, next.1.g, local_t),
+            b: Self::lerp_u8(prev.1.b, next.1.b, local_t),
+            a: Self::lerp_u8(prev.1.a, next.1.a, local_t),
+        }
+    }
+
+    /// Linear interpolation for u8 values
+    fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+        let result = a as f32 + (b as f32 - a as f32) * t;
+        result.round().clamp(0.0, 255.0) as u8
+    }
 }
 
 impl RenderBackend for SdlBackend {
@@ -516,6 +1109,39 @@ impl RenderBackend for SdlBackend {
                 }
                 PaintCommand::DrawImage { rect, pixels, alt } => {
                     self.draw_image(rect, pixels.as_ref(), alt);
+                }
+                PaintCommand::SetClipRect(rect) => {
+                    let sdl_rect = SdlRect::new(
+                        rect.x as i32,
+                        rect.y as i32,
+                        rect.width as u32,
+                        rect.height as u32,
+                    );
+                    self.canvas.set_clip_rect(Some(sdl_rect));
+                }
+                PaintCommand::ClearClipRect => {
+                    self.canvas.set_clip_rect(None);
+                }
+                PaintCommand::PushOpacity(opacity) => {
+                    self.opacity_stack.push(*opacity);
+                }
+                PaintCommand::PopOpacity => {
+                    self.opacity_stack.pop();
+                }
+                PaintCommand::DrawBoxShadow { rect, shadow } => {
+                    self.draw_box_shadow(rect, shadow);
+                }
+                PaintCommand::FillRoundedRect { rect, radius, color } => {
+                    self.draw_rounded_rect(rect, radius, *color);
+                }
+                PaintCommand::DrawRoundedBorder { rect, radius, widths, color } => {
+                    self.draw_rounded_border(rect, radius, widths, *color);
+                }
+                PaintCommand::FillLinearGradient { rect, direction, stops, radius } => {
+                    self.draw_linear_gradient(rect, direction, stops, radius.as_ref());
+                }
+                PaintCommand::FillRadialGradient { rect, shape, size, center_x, center_y, stops, radius } => {
+                    self.draw_radial_gradient(rect, shape, size, *center_x, *center_y, stops, radius.as_ref());
                 }
             }
         }

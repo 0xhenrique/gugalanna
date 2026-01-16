@@ -4,6 +4,7 @@
 
 use gugalanna_dom::NodeId;
 use gugalanna_layout::{LayoutBox, BoxType, InputType, ImagePixels, Rect};
+use gugalanna_style::{Background, BorderRadius, BoxShadow, ColorStop, Gradient, GradientDirection, Overflow, RadialShape, RadialSize};
 
 use crate::paint::RenderColor;
 
@@ -73,6 +74,49 @@ pub enum PaintCommand {
         /// Alt text for placeholder display
         alt: String,
     },
+    /// Set clipping rectangle (for overflow: hidden)
+    SetClipRect(Rect),
+    /// Clear clipping rectangle
+    ClearClipRect,
+    /// Push an opacity modifier (affects all subsequent commands until PopOpacity)
+    PushOpacity(f32),
+    /// Pop the current opacity modifier
+    PopOpacity,
+    /// Draw a box shadow
+    DrawBoxShadow {
+        rect: Rect,
+        shadow: BoxShadow,
+    },
+    /// Fill a rounded rectangle
+    FillRoundedRect {
+        rect: Rect,
+        radius: BorderRadius,
+        color: RenderColor,
+    },
+    /// Draw a rounded border
+    DrawRoundedBorder {
+        rect: Rect,
+        radius: BorderRadius,
+        widths: BorderWidths,
+        color: RenderColor,
+    },
+    /// Fill a rectangle with a linear gradient
+    FillLinearGradient {
+        rect: Rect,
+        direction: GradientDirection,
+        stops: Vec<ColorStop>,
+        radius: Option<BorderRadius>,
+    },
+    /// Fill a rectangle with a radial gradient
+    FillRadialGradient {
+        rect: Rect,
+        shape: RadialShape,
+        size: RadialSize,
+        center_x: f32,
+        center_y: f32,
+        stops: Vec<ColorStop>,
+        radius: Option<BorderRadius>,
+    },
 }
 
 /// Border widths for all four sides
@@ -118,6 +162,16 @@ fn render_layout_box(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f
     let abs_x = offset_x + d.content.x;
     let abs_y = offset_y + d.content.y;
 
+    // Check if we need to apply opacity
+    let needs_opacity = layout_box.style().map_or(false, |s| s.opacity < 1.0);
+    if needs_opacity {
+        let opacity = layout_box.style().map(|s| s.opacity).unwrap_or(1.0);
+        list.push(PaintCommand::PushOpacity(opacity));
+    }
+
+    // Render box-shadow first (behind everything)
+    render_box_shadow(list, layout_box, offset_x, offset_y);
+
     // Render this box's background and borders
     render_background(list, layout_box, offset_x, offset_y);
     render_borders(list, layout_box, offset_x, offset_y);
@@ -125,10 +179,70 @@ fn render_layout_box(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f
     // Render content (text)
     render_content(list, layout_box, abs_x, abs_y);
 
+    // Check if we need to clip overflow
+    let needs_clip = layout_box.style().map_or(false, |s| {
+        s.overflow != Overflow::Visible ||
+        s.overflow_x != Overflow::Visible ||
+        s.overflow_y != Overflow::Visible
+    });
+
+    if needs_clip {
+        // Set clip rect to the content area of this box
+        let clip_rect = Rect::new(abs_x, abs_y, d.content.width, d.content.height);
+        list.push(PaintCommand::SetClipRect(clip_rect));
+    }
+
+    // Sort children by z-index before rendering
+    let mut children_sorted: Vec<_> = layout_box.children.iter().collect();
+    children_sorted.sort_by_key(|child| {
+        child.style().map(|s| s.z_index).unwrap_or(0)
+    });
+
     // Render children - they are positioned relative to this box's content area
-    for child in &layout_box.children {
+    for child in children_sorted {
         render_layout_box(list, child, abs_x, abs_y);
     }
+
+    if needs_clip {
+        list.push(PaintCommand::ClearClipRect);
+    }
+
+    if needs_opacity {
+        list.push(PaintCommand::PopOpacity);
+    }
+}
+
+/// Render box shadow for a layout box
+fn render_box_shadow(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f32, offset_y: f32) {
+    let style = match layout_box.style() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let shadow = match &style.box_shadow {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Skip inset shadows for now (more complex to render)
+    if shadow.inset {
+        return;
+    }
+
+    let d = &layout_box.dimensions;
+    let border_box = d.border_box();
+
+    let rect = Rect::new(
+        offset_x + border_box.x,
+        offset_y + border_box.y,
+        border_box.width,
+        border_box.height,
+    );
+
+    list.push(PaintCommand::DrawBoxShadow {
+        rect,
+        shadow: shadow.clone(),
+    });
 }
 
 /// Render the background of a layout box
@@ -137,13 +251,6 @@ fn render_background(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f
         Some(s) => s,
         None => return,
     };
-
-    let color: RenderColor = style.background_color.into();
-
-    // Skip transparent backgrounds
-    if color.is_transparent() {
-        return;
-    }
 
     let d = &layout_box.dimensions;
     let border_box = d.border_box();
@@ -156,7 +263,63 @@ fn render_background(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f
         border_box.height,
     );
 
-    list.push(PaintCommand::FillRect { rect, color });
+    let has_radius = style.border_radius.has_radius();
+    let radius = if has_radius {
+        Some(style.border_radius)
+    } else {
+        None
+    };
+
+    match &style.background {
+        Background::Color(color) => {
+            let render_color: RenderColor = (*color).into();
+
+            // Skip transparent backgrounds
+            if render_color.is_transparent() {
+                return;
+            }
+
+            // Check if we have border-radius
+            if has_radius {
+                list.push(PaintCommand::FillRoundedRect {
+                    rect,
+                    radius: style.border_radius,
+                    color: render_color,
+                });
+            } else {
+                list.push(PaintCommand::FillRect { rect, color: render_color });
+            }
+        }
+        Background::Gradient(gradient) => {
+            match gradient {
+                Gradient::Linear { direction, stops } => {
+                    list.push(PaintCommand::FillLinearGradient {
+                        rect,
+                        direction: direction.clone(),
+                        stops: stops.clone(),
+                        radius,
+                    });
+                }
+                Gradient::Radial {
+                    shape,
+                    size,
+                    center_x,
+                    center_y,
+                    stops,
+                } => {
+                    list.push(PaintCommand::FillRadialGradient {
+                        rect,
+                        shape: *shape,
+                        size: *size,
+                        center_x: *center_x,
+                        center_y: *center_y,
+                        stops: stops.clone(),
+                        radius,
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Render the borders of a layout box
@@ -188,16 +351,28 @@ fn render_borders(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f32,
         border_box.height,
     );
 
-    list.push(PaintCommand::DrawBorder {
-        rect,
-        widths: BorderWidths {
-            top: d.border.top,
-            right: d.border.right,
-            bottom: d.border.bottom,
-            left: d.border.left,
-        },
-        color,
-    });
+    let widths = BorderWidths {
+        top: d.border.top,
+        right: d.border.right,
+        bottom: d.border.bottom,
+        left: d.border.left,
+    };
+
+    // Check if we have border-radius
+    if style.border_radius.has_radius() {
+        list.push(PaintCommand::DrawRoundedBorder {
+            rect,
+            radius: style.border_radius,
+            widths,
+            color,
+        });
+    } else {
+        list.push(PaintCommand::DrawBorder {
+            rect,
+            widths,
+            color,
+        });
+    }
 }
 
 /// Render text content and form elements

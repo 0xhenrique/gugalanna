@@ -4,11 +4,13 @@
 
 mod boxtree;
 mod block;
+mod flex;
 mod inline;
 mod text;
 
 pub use boxtree::{LayoutBox, BoxType, InputType, ImageData, ImagePixels, build_layout_tree};
 pub use block::layout_block;
+pub use flex::layout_flex;
 pub use inline::{LineBox, InlineBox};
 pub use text::TextMetrics;
 

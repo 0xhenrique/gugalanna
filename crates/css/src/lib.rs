@@ -24,7 +24,7 @@ mod parser;
 // Re-export main types
 pub use error::{CssError, CssResult, SourceLocation};
 pub use tokenizer::{Token, Tokenizer, HashType};
-pub use value::{CssValue, Color, LengthUnit, ValueParser};
+pub use value::{CssValue, Color, LengthUnit, TimeUnit, ValueParser};
 pub use selector::{Selector, SelectorPart, Combinator, AttributeOp, Specificity};
 pub use parser::{
     Stylesheet, Rule, StyleRule, Declaration,

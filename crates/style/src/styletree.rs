@@ -9,7 +9,7 @@ use gugalanna_dom::{DomTree, NodeId};
 
 use crate::cascade::Cascade;
 use crate::resolver::{ResolveContext, StyleResolver};
-use crate::ComputedStyle;
+use crate::{Background, ComputedStyle};
 
 /// A tree of computed styles, parallel to the DOM tree
 pub struct StyleTree {
@@ -251,7 +251,19 @@ impl StyleTree {
             }
             "background-color" => {
                 if let Some(c) = StyleResolver::resolve_color(&value, context) {
-                    style.background_color = c;
+                    style.background = Background::Color(c);
+                }
+            }
+            "background" => {
+                // Try to resolve as gradient first, then as color
+                if let Some(bg) = StyleResolver::resolve_background(&value, context) {
+                    style.background = bg;
+                }
+            }
+            "background-image" => {
+                // Only gradients are supported, not URLs
+                if let Some(gradient) = StyleResolver::resolve_gradient(&value, context) {
+                    style.background = Background::Gradient(gradient);
                 }
             }
             "border-color" => {
@@ -286,6 +298,157 @@ impl StyleTree {
             "text-align" => {
                 if let Some(a) = StyleResolver::resolve_text_align(&value) {
                     style.text_align = a;
+                }
+            }
+
+            // Stacking and overflow
+            "z-index" => {
+                if let Some(z) = StyleResolver::resolve_z_index(&value) {
+                    style.z_index = z;
+                }
+            }
+            "overflow" => {
+                if let Some(o) = StyleResolver::resolve_overflow(&value) {
+                    style.overflow = o;
+                    style.overflow_x = o;
+                    style.overflow_y = o;
+                }
+            }
+            "overflow-x" => {
+                if let Some(o) = StyleResolver::resolve_overflow(&value) {
+                    style.overflow_x = o;
+                }
+            }
+            "overflow-y" => {
+                if let Some(o) = StyleResolver::resolve_overflow(&value) {
+                    style.overflow_y = o;
+                }
+            }
+
+            // Visual effects
+            "opacity" => {
+                if let Some(o) = StyleResolver::resolve_opacity(&value) {
+                    style.opacity = o;
+                }
+            }
+            "box-shadow" => {
+                style.box_shadow = StyleResolver::resolve_box_shadow(&value, context);
+            }
+            "border-radius" => {
+                if let Some(r) = StyleResolver::resolve_border_radius(&value, context) {
+                    style.border_radius = r;
+                }
+            }
+            "border-top-left-radius" => {
+                if let Some(v) = StyleResolver::resolve_length(&value, context) {
+                    style.border_radius.top_left = v;
+                }
+            }
+            "border-top-right-radius" => {
+                if let Some(v) = StyleResolver::resolve_length(&value, context) {
+                    style.border_radius.top_right = v;
+                }
+            }
+            "border-bottom-right-radius" => {
+                if let Some(v) = StyleResolver::resolve_length(&value, context) {
+                    style.border_radius.bottom_right = v;
+                }
+            }
+            "border-bottom-left-radius" => {
+                if let Some(v) = StyleResolver::resolve_length(&value, context) {
+                    style.border_radius.bottom_left = v;
+                }
+            }
+
+            // Flexbox container properties
+            "flex-direction" => {
+                if let Some(fd) = StyleResolver::resolve_flex_direction(&value) {
+                    style.flex_direction = fd;
+                }
+            }
+            "justify-content" => {
+                if let Some(jc) = StyleResolver::resolve_justify_content(&value) {
+                    style.justify_content = jc;
+                }
+            }
+            "align-items" => {
+                if let Some(ai) = StyleResolver::resolve_align_items(&value) {
+                    style.align_items = ai;
+                }
+            }
+
+            // Flexbox item properties
+            "flex-grow" => {
+                if let Some(fg) = StyleResolver::resolve_flex_grow(&value) {
+                    style.flex_grow = fg;
+                }
+            }
+            "flex-shrink" => {
+                if let Some(fs) = StyleResolver::resolve_flex_shrink(&value) {
+                    style.flex_shrink = fs;
+                }
+            }
+            "flex-basis" => {
+                if let Some(fb) = StyleResolver::resolve_flex_basis(&value, context) {
+                    style.flex_basis = fb;
+                }
+            }
+            "align-self" => {
+                if let Some(align_self) = StyleResolver::resolve_align_self(&value) {
+                    style.align_self = align_self;
+                }
+            }
+            "order" => {
+                if let Some(o) = StyleResolver::resolve_order(&value) {
+                    style.order = o;
+                }
+            }
+
+            // Transitions
+            "transition" => {
+                if let Some(transitions) = StyleResolver::resolve_transition(&value) {
+                    style.transitions = transitions;
+                }
+            }
+            "transition-property" => {
+                // Update or create transition with property
+                if let CssValue::Keyword(prop) = &value {
+                    if style.transitions.is_empty() {
+                        style.transitions.push(crate::TransitionDef::default());
+                    }
+                    for t in &mut style.transitions {
+                        t.property = prop.to_ascii_lowercase();
+                    }
+                }
+            }
+            "transition-duration" => {
+                if let Some(duration) = StyleResolver::resolve_time_ms(&value) {
+                    if style.transitions.is_empty() {
+                        style.transitions.push(crate::TransitionDef::default());
+                    }
+                    for t in &mut style.transitions {
+                        t.duration_ms = duration;
+                    }
+                }
+            }
+            "transition-timing-function" => {
+                if let Some(timing) = StyleResolver::resolve_timing_function(&value) {
+                    if style.transitions.is_empty() {
+                        style.transitions.push(crate::TransitionDef::default());
+                    }
+                    for t in &mut style.transitions {
+                        t.timing_function = timing;
+                    }
+                }
+            }
+            "transition-delay" => {
+                if let Some(delay) = StyleResolver::resolve_time_ms(&value) {
+                    if style.transitions.is_empty() {
+                        style.transitions.push(crate::TransitionDef::default());
+                    }
+                    for t in &mut style.transitions {
+                        t.delay_ms = delay;
+                    }
                 }
             }
 

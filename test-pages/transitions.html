@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CSS Transitions Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+            margin-bottom: 10px;
+        }
+        p {
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        /* Basic transition box */
+        .box {
+            width: 100px;
+            height: 100px;
+            background: #4a90d9;
+            color: white;
+            padding: 15px;
+            margin: 20px;
+            transition: all 0.3s ease;
+        }
+        .box:hover {
+            width: 200px;
+            background: #d94a4a;
+            opacity: 0.8;
+        }
+
+        /* Timing function demos */
+        .timing-demo {
+            display: flex;
+            flex-direction: column;
+        }
+        .timing-box {
+            width: 50px;
+            height: 30px;
+            background: #4ad9a0;
+            color: white;
+            padding: 5px 10px;
+            margin: 5px;
+        }
+        .timing-box:hover {
+            width: 300px;
+        }
+        .linear { transition: width 1s linear; }
+        .ease { transition: width 1s ease; }
+        .ease-in { transition: width 1s ease-in; }
+        .ease-out { transition: width 1s ease-out; }
+        .ease-in-out { transition: width 1s ease-in-out; }
+
+        /* Delayed transition */
+        .delayed-box {
+            width: 100px;
+            height: 50px;
+            background: #9a4ad9;
+            color: white;
+            padding: 10px;
+            margin: 20px;
+            transition: width 0.5s ease 0.2s;
+        }
+        .delayed-box:hover {
+            width: 250px;
+        }
+
+        /* Multiple properties */
+        .multi-box {
+            width: 100px;
+            height: 100px;
+            background: #d9a04a;
+            color: white;
+            padding: 15px;
+            margin: 20px;
+            opacity: 1.0;
+            transition: width 0.3s ease, opacity 0.5s linear, background 0.4s ease-in-out;
+        }
+        .multi-box:hover {
+            width: 200px;
+            opacity: 0.6;
+            background: #4a6ad9;
+        }
+
+        /* Info text */
+        .info {
+            background: #e0e0e0;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>CSS Transitions Test</h1>
+
+    <div class="info">
+        <p><strong>Note:</strong> CSS transitions animate property changes over time.
+        Hover over the boxes below to trigger transitions.</p>
+    </div>
+
+    <h2>1. Basic Transition (all properties, 0.3s ease)</h2>
+    <div class="box">Hover me!</div>
+
+    <h2>2. Timing Functions (1s duration)</h2>
+    <p>Compare how different easing functions affect the animation speed:</p>
+    <div class="timing-demo">
+        <div class="timing-box linear">linear</div>
+        <div class="timing-box ease">ease</div>
+        <div class="timing-box ease-in">ease-in</div>
+        <div class="timing-box ease-out">ease-out</div>
+        <div class="timing-box ease-in-out">ease-in-out</div>
+    </div>
+
+    <h2>3. Delayed Transition (0.2s delay)</h2>
+    <p>This transition waits 0.2 seconds before starting:</p>
+    <div class="delayed-box">Delayed</div>
+
+    <h2>4. Multiple Properties</h2>
+    <p>Different properties can have different durations and timing functions:</p>
+    <div class="multi-box">Multi</div>
+
+    <h2>5. Transition Property Values</h2>
+    <div class="info">
+        <p><strong>Shorthand:</strong> transition: property duration timing-function delay;</p>
+        <p><strong>Example:</strong> transition: width 0.3s ease 0.1s;</p>
+        <p><strong>Multiple:</strong> transition: width 0.3s, opacity 0.5s linear;</p>
+    </div>
+</body>
+</html>
