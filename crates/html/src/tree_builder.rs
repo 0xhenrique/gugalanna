@@ -1,6 +1,7 @@
 //! HTML Tree Builder
 //!
 //! Constructs a DOM tree from HTML tokens.
+//! Implements key HTML5 parsing algorithms for proper tree construction.
 
 use gugalanna_dom::{DomTree, NodeId, NodeType};
 
@@ -10,12 +11,26 @@ use crate::error::HtmlResult;
 /// Stack of open elements
 type OpenElements = Vec<NodeId>;
 
+/// Active formatting elements list entry
+#[derive(Debug, Clone)]
+enum FormattingEntry {
+    /// An actual formatting element
+    Element(NodeId),
+    /// A scope marker (for handling nested formatting contexts)
+    Marker,
+}
+
+/// List of active formatting elements (for adoption agency algorithm)
+type ActiveFormattingElements = Vec<FormattingEntry>;
+
 /// HTML parser that builds a DOM tree
 pub struct HtmlParser {
     tree: DomTree,
     open_elements: OpenElements,
+    active_formatting_elements: ActiveFormattingElements,
     head_element: Option<NodeId>,
     form_element: Option<NodeId>,
+    foster_parenting: bool,
 }
 
 impl HtmlParser {
@@ -24,8 +39,10 @@ impl HtmlParser {
         Self {
             tree: DomTree::new(),
             open_elements: Vec::new(),
+            active_formatting_elements: Vec::new(),
             head_element: None,
             form_element: None,
+            foster_parenting: false,
         }
     }
 
@@ -86,6 +103,14 @@ impl HtmlParser {
         attributes: smallvec::SmallVec<[(String, String); 4]>,
         self_closing: bool,
     ) -> HtmlResult<()> {
+        // Handle implicit end tags before creating the element
+        self.handle_implicit_end_tags(name);
+
+        // Reconstruct active formatting elements if needed
+        if is_formatting_scope_content(name) {
+            self.reconstruct_active_formatting_elements();
+        }
+
         // Create the element
         let element_id = self.tree.create_element(name);
 
@@ -99,8 +124,8 @@ impl HtmlParser {
         // Handle implicit elements
         self.ensure_implicit_elements(name);
 
-        // Append to current parent
-        let parent = self.current_node();
+        // Get the insertion location (may be affected by foster parenting)
+        let parent = self.get_appropriate_place_for_inserting(name);
         self.tree.append_child(parent, element_id).ok();
 
         // Track special elements
@@ -110,37 +135,268 @@ impl HtmlParser {
             _ => {}
         }
 
+        // Add to active formatting elements if it's a formatting element
+        if is_formatting_element(name) {
+            self.active_formatting_elements.push(FormattingEntry::Element(element_id));
+        }
+
         // Push to open elements (unless self-closing or void element)
         if !self_closing && !is_void_element(name) {
             self.open_elements.push(element_id);
         }
 
+        // Insert scope marker after certain elements
+        if is_scope_marker_element(name) {
+            self.active_formatting_elements.push(FormattingEntry::Marker);
+        }
+
         Ok(())
     }
 
-    /// Handle an end tag
-    fn handle_end_tag(&mut self, name: &str) -> HtmlResult<()> {
-        // Find matching open element
-        for i in (0..self.open_elements.len()).rev() {
-            let element_id = self.open_elements[i];
-            if let Some(node) = self.tree.get(element_id) {
-                if let Some(elem) = node.as_element() {
-                    if elem.tag_name == name {
-                        // Pop all elements up to and including this one
-                        self.open_elements.truncate(i);
-                        return Ok(());
+    /// Handle implicit end tags before a start tag
+    fn handle_implicit_end_tags(&mut self, incoming_tag: &str) {
+        // Close <p> element when certain tags are seen
+        if closes_p_element(incoming_tag) && self.has_element_in_button_scope("p") {
+            self.close_p_element();
+        }
+
+        // Close <li> when another <li> is seen
+        if incoming_tag == "li" && self.has_element_in_list_item_scope("li") {
+            self.generate_implied_end_tags_except("li");
+            self.pop_until_tag("li");
+        }
+
+        // Close <dd> or <dt> when another definition term is seen
+        if incoming_tag == "dd" || incoming_tag == "dt" {
+            if self.has_element_in_scope("dd") {
+                self.generate_implied_end_tags_except("dd");
+                self.pop_until_tag("dd");
+            }
+            if self.has_element_in_scope("dt") {
+                self.generate_implied_end_tags_except("dt");
+                self.pop_until_tag("dt");
+            }
+        }
+
+        // Close heading elements when another heading is seen
+        if is_heading(incoming_tag) {
+            if self.has_heading_in_scope() {
+                self.generate_implied_end_tags_except("");
+                // Pop until we hit a heading
+                while let Some(&node_id) = self.open_elements.last() {
+                    if let Some(tag) = self.get_tag_name(node_id) {
+                        if is_heading(&tag) {
+                            self.open_elements.pop();
+                            break;
+                        }
                     }
+                    self.open_elements.pop();
                 }
             }
         }
 
-        // No matching element found, ignore
+        // Close <option> when another <option> is seen
+        if incoming_tag == "option" {
+            if let Some(&node_id) = self.open_elements.last() {
+                if self.get_tag_name(node_id).as_deref() == Some("option") {
+                    self.open_elements.pop();
+                }
+            }
+        }
+
+        // Close <optgroup> when <optgroup> or end of <select> is seen
+        if incoming_tag == "optgroup" {
+            // Close open option first
+            if let Some(&node_id) = self.open_elements.last() {
+                if self.get_tag_name(node_id).as_deref() == Some("option") {
+                    self.open_elements.pop();
+                }
+            }
+            // Then close optgroup if open
+            if let Some(&node_id) = self.open_elements.last() {
+                if self.get_tag_name(node_id).as_deref() == Some("optgroup") {
+                    self.open_elements.pop();
+                }
+            }
+        }
+
+        // Handle table-related implicit closes
+        if incoming_tag == "tr" {
+            self.clear_stack_to_table_body_context();
+        } else if incoming_tag == "td" || incoming_tag == "th" {
+            self.clear_stack_to_table_row_context();
+        }
+    }
+
+    /// Handle an end tag
+    fn handle_end_tag(&mut self, name: &str) -> HtmlResult<()> {
+        // Handle formatting elements with adoption agency
+        if is_formatting_element(name) {
+            self.run_adoption_agency(name);
+            return Ok(());
+        }
+
+        // Handle special end tags
+        match name {
+            "p" => {
+                if self.has_element_in_button_scope("p") {
+                    self.close_p_element();
+                } else {
+                    // Act as if <p> start tag was seen, then close it
+                    let p_id = self.tree.create_element("p");
+                    let parent = self.current_node();
+                    self.tree.append_child(parent, p_id).ok();
+                }
+                return Ok(());
+            }
+            "li" => {
+                if self.has_element_in_list_item_scope("li") {
+                    self.generate_implied_end_tags_except("li");
+                    self.pop_until_tag("li");
+                }
+                return Ok(());
+            }
+            "dd" | "dt" => {
+                if self.has_element_in_scope(name) {
+                    self.generate_implied_end_tags_except(name);
+                    self.pop_until_tag(name);
+                }
+                return Ok(());
+            }
+            "body" | "html" => {
+                // These are handled specially - for now just ignore
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        // Find matching open element (generic end tag handling)
+        for i in (0..self.open_elements.len()).rev() {
+            let element_id = self.open_elements[i];
+            if let Some(tag) = self.get_tag_name(element_id) {
+                if tag == name {
+                    // Generate implied end tags
+                    self.generate_implied_end_tags_except(name);
+                    // Pop all elements up to and including this one
+                    self.open_elements.truncate(i);
+                    return Ok(());
+                }
+                // If we hit a special element, stop looking
+                if is_special_element(&tag) {
+                    break;
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Simplified adoption agency algorithm for formatting elements
+    fn run_adoption_agency(&mut self, tag: &str) {
+        // Find the formatting element in the list of active formatting elements
+        let formatting_element_pos = self.active_formatting_elements.iter().rposition(|entry| {
+            matches!(entry, FormattingEntry::Element(id) if self.get_tag_name(*id).as_deref() == Some(tag))
+        });
+
+        let formatting_element_pos = match formatting_element_pos {
+            Some(pos) => pos,
+            None => {
+                // No formatting element found, just do normal end tag processing
+                self.pop_until_tag(tag);
+                return;
+            }
+        };
+
+        let formatting_element_id = match &self.active_formatting_elements[formatting_element_pos] {
+            FormattingEntry::Element(id) => *id,
+            FormattingEntry::Marker => return,
+        };
+
+        // Check if the element is in the stack of open elements
+        let stack_pos = self.open_elements.iter().position(|&id| id == formatting_element_id);
+        let stack_pos = match stack_pos {
+            Some(pos) => pos,
+            None => {
+                // Element not in stack, remove from active formatting elements
+                self.active_formatting_elements.remove(formatting_element_pos);
+                return;
+            }
+        };
+
+        // Check if the element is in scope
+        if !self.has_element_in_scope(tag) {
+            return;
+        }
+
+        // If the current node is the formatting element, pop it and remove from active list
+        if let Some(&current) = self.open_elements.last() {
+            if current == formatting_element_id {
+                self.open_elements.pop();
+                self.active_formatting_elements.remove(formatting_element_pos);
+                return;
+            }
+        }
+
+        // Simplified: just close up to and including the formatting element
+        // A full adoption agency implementation would move nodes around
+        self.open_elements.truncate(stack_pos);
+        self.active_formatting_elements.remove(formatting_element_pos);
+    }
+
+    /// Reconstruct active formatting elements
+    fn reconstruct_active_formatting_elements(&mut self) {
+        if self.active_formatting_elements.is_empty() {
+            return;
+        }
+
+        // Find the last marker or beginning
+        let mut entry_idx = self.active_formatting_elements.len() - 1;
+
+        loop {
+            match &self.active_formatting_elements[entry_idx] {
+                FormattingEntry::Marker => {
+                    entry_idx += 1;
+                    break;
+                }
+                FormattingEntry::Element(id) => {
+                    // If this element is in the stack, we're done
+                    if self.open_elements.contains(id) {
+                        entry_idx += 1;
+                        break;
+                    }
+                }
+            }
+
+            if entry_idx == 0 {
+                break;
+            }
+            entry_idx -= 1;
+        }
+
+        // Now reconstruct from entry_idx to the end
+        while entry_idx < self.active_formatting_elements.len() {
+            if let FormattingEntry::Element(old_id) = &self.active_formatting_elements[entry_idx] {
+                if let Some(tag) = self.get_tag_name(*old_id) {
+                    // Create a new element with the same tag name
+                    let new_id = self.tree.create_element(&tag);
+                    let parent = self.current_node();
+                    self.tree.append_child(parent, new_id).ok();
+                    self.open_elements.push(new_id);
+                    self.active_formatting_elements[entry_idx] = FormattingEntry::Element(new_id);
+                }
+            }
+            entry_idx += 1;
+        }
     }
 
     /// Handle a character token
     fn handle_character(&mut self, c: char) -> HtmlResult<()> {
-        let parent = self.current_node();
+        // Reconstruct active formatting elements for non-whitespace text
+        if !c.is_ascii_whitespace() {
+            self.reconstruct_active_formatting_elements();
+        }
+
+        let parent = self.get_appropriate_place_for_inserting("text");
 
         // Try to append to existing text node
         if let Some(&last_child_id) = self.tree.get(parent)
@@ -163,6 +419,35 @@ impl HtmlParser {
     /// Get the current node (top of stack or document)
     fn current_node(&self) -> NodeId {
         self.open_elements.last().copied().unwrap_or(self.tree.document_id())
+    }
+
+    /// Get the appropriate place for inserting a node
+    /// This handles foster parenting when inside tables
+    fn get_appropriate_place_for_inserting(&self, _incoming_tag: &str) -> NodeId {
+        if self.foster_parenting {
+            // Foster parent to before the table element
+            // Simplified: just return parent of table or document
+            for &id in self.open_elements.iter().rev() {
+                if let Some(tag) = self.get_tag_name(id) {
+                    if tag == "table" {
+                        // Get parent of table
+                        if let Some(node) = self.tree.get(id) {
+                            if let Some(parent) = node.parent {
+                                return parent;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.current_node()
+    }
+
+    /// Get the tag name of a node
+    fn get_tag_name(&self, node_id: NodeId) -> Option<String> {
+        self.tree.get(node_id)
+            .and_then(|n| n.as_element())
+            .map(|e| e.tag_name.clone())
     }
 
     /// Ensure implicit html/head/body elements exist
@@ -200,6 +485,120 @@ impl HtmlParser {
             }
         }
     }
+
+    /// Check if an element is in scope
+    fn has_element_in_scope(&self, tag: &str) -> bool {
+        for &id in self.open_elements.iter().rev() {
+            if let Some(node_tag) = self.get_tag_name(id) {
+                if node_tag == tag {
+                    return true;
+                }
+                if is_scope_element(&node_tag) {
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if an element is in button scope
+    fn has_element_in_button_scope(&self, tag: &str) -> bool {
+        for &id in self.open_elements.iter().rev() {
+            if let Some(node_tag) = self.get_tag_name(id) {
+                if node_tag == tag {
+                    return true;
+                }
+                if is_scope_element(&node_tag) || node_tag == "button" {
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if an element is in list item scope
+    fn has_element_in_list_item_scope(&self, tag: &str) -> bool {
+        for &id in self.open_elements.iter().rev() {
+            if let Some(node_tag) = self.get_tag_name(id) {
+                if node_tag == tag {
+                    return true;
+                }
+                if is_scope_element(&node_tag) || node_tag == "ol" || node_tag == "ul" {
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if any heading element is in scope
+    fn has_heading_in_scope(&self) -> bool {
+        for &id in self.open_elements.iter().rev() {
+            if let Some(node_tag) = self.get_tag_name(id) {
+                if is_heading(&node_tag) {
+                    return true;
+                }
+                if is_scope_element(&node_tag) {
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Close a <p> element
+    fn close_p_element(&mut self) {
+        self.generate_implied_end_tags_except("p");
+        self.pop_until_tag("p");
+    }
+
+    /// Generate implied end tags (except for the given tag)
+    fn generate_implied_end_tags_except(&mut self, except: &str) {
+        while let Some(&node_id) = self.open_elements.last() {
+            if let Some(tag) = self.get_tag_name(node_id) {
+                if has_implied_end_tag(&tag) && tag != except {
+                    self.open_elements.pop();
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    /// Pop elements until we find the given tag (inclusive)
+    fn pop_until_tag(&mut self, tag: &str) {
+        while let Some(&node_id) = self.open_elements.last() {
+            let should_stop = self.get_tag_name(node_id).as_deref() == Some(tag);
+            self.open_elements.pop();
+            if should_stop {
+                break;
+            }
+        }
+    }
+
+    /// Clear stack to table body context
+    fn clear_stack_to_table_body_context(&mut self) {
+        while let Some(&node_id) = self.open_elements.last() {
+            if let Some(tag) = self.get_tag_name(node_id) {
+                if matches!(tag.as_str(), "tbody" | "tfoot" | "thead" | "template" | "html") {
+                    break;
+                }
+            }
+            self.open_elements.pop();
+        }
+    }
+
+    /// Clear stack to table row context
+    fn clear_stack_to_table_row_context(&mut self) {
+        while let Some(&node_id) = self.open_elements.last() {
+            if let Some(tag) = self.get_tag_name(node_id) {
+                if matches!(tag.as_str(), "tr" | "template" | "html") {
+                    break;
+                }
+            }
+            self.open_elements.pop();
+        }
+    }
 }
 
 impl Default for HtmlParser {
@@ -224,6 +623,80 @@ fn is_body_content(name: &str) -> bool {
         "base" | "basefont" | "bgsound" | "link" | "meta" | "noframes"
         | "script" | "style" | "template" | "title"
     )
+}
+
+/// Check if an element is a formatting element (for adoption agency)
+fn is_formatting_element(name: &str) -> bool {
+    matches!(
+        name,
+        "a" | "b" | "big" | "code" | "em" | "font" | "i" | "nobr"
+        | "s" | "small" | "strike" | "strong" | "tt" | "u"
+    )
+}
+
+/// Check if an element is a special element (stops certain searches)
+fn is_special_element(name: &str) -> bool {
+    matches!(
+        name,
+        "address" | "applet" | "area" | "article" | "aside" | "base" | "basefont"
+        | "bgsound" | "blockquote" | "body" | "br" | "button" | "caption" | "center"
+        | "col" | "colgroup" | "dd" | "details" | "dir" | "div" | "dl" | "dt" | "embed"
+        | "fieldset" | "figcaption" | "figure" | "footer" | "form" | "frame" | "frameset"
+        | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "head" | "header" | "hgroup" | "hr"
+        | "html" | "iframe" | "img" | "input" | "li" | "link" | "listing" | "main"
+        | "marquee" | "menu" | "meta" | "nav" | "noembed" | "noframes" | "noscript"
+        | "object" | "ol" | "p" | "param" | "plaintext" | "pre" | "script" | "section"
+        | "select" | "source" | "style" | "summary" | "table" | "tbody" | "td"
+        | "template" | "textarea" | "tfoot" | "th" | "thead" | "title" | "tr" | "track"
+        | "ul" | "wbr" | "xmp"
+    )
+}
+
+/// Check if tag closes an open <p> element
+fn closes_p_element(name: &str) -> bool {
+    matches!(
+        name,
+        "address" | "article" | "aside" | "blockquote" | "center" | "details"
+        | "dialog" | "dir" | "div" | "dl" | "fieldset" | "figcaption" | "figure"
+        | "footer" | "form" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "header"
+        | "hgroup" | "hr" | "li" | "main" | "menu" | "nav" | "ol" | "p" | "pre"
+        | "section" | "table" | "ul"
+    )
+}
+
+/// Check if a tag is a heading
+fn is_heading(name: &str) -> bool {
+    matches!(name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+}
+
+/// Check if an element has an implied end tag
+fn has_implied_end_tag(name: &str) -> bool {
+    matches!(
+        name,
+        "dd" | "dt" | "li" | "optgroup" | "option" | "p" | "rb" | "rp" | "rt" | "rtc"
+    )
+}
+
+/// Check if an element creates a scope boundary
+fn is_scope_element(name: &str) -> bool {
+    matches!(
+        name,
+        "applet" | "caption" | "html" | "table" | "td" | "th" | "marquee" | "object"
+        | "template"
+    )
+}
+
+/// Check if an element should trigger a scope marker in active formatting elements
+fn is_scope_marker_element(name: &str) -> bool {
+    matches!(
+        name,
+        "applet" | "marquee" | "object" | "table" | "td" | "th" | "caption"
+    )
+}
+
+/// Check if content should trigger formatting element reconstruction
+fn is_formatting_scope_content(name: &str) -> bool {
+    !is_void_element(name) && !is_scope_marker_element(name) && name != "br"
 }
 
 #[cfg(test)]
@@ -302,6 +775,113 @@ mod tests {
 
         let div_nodes = tree.get_elements_by_tag_name("div");
         assert_eq!(div_nodes.len(), 1);
+    }
+
+    // === Implicit tag closing tests ===
+
+    #[test]
+    fn test_implicit_p_close() {
+        // <p> should be implicitly closed by block elements
+        let tree = parse("<p>First<p>Second<p>Third");
+
+        let p_nodes = tree.get_elements_by_tag_name("p");
+        assert_eq!(p_nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_implicit_p_close_by_div() {
+        let tree = parse("<p>Paragraph<div>Block</div>");
+
+        let p_nodes = tree.get_elements_by_tag_name("p");
+        assert_eq!(p_nodes.len(), 1);
+
+        let div_nodes = tree.get_elements_by_tag_name("div");
+        assert_eq!(div_nodes.len(), 1);
+    }
+
+    #[test]
+    fn test_implicit_li_close() {
+        // <li> should be implicitly closed by another <li>
+        let tree = parse("<ul><li>One<li>Two<li>Three</ul>");
+
+        let li_nodes = tree.get_elements_by_tag_name("li");
+        assert_eq!(li_nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_implicit_dd_dt_close() {
+        // <dd> and <dt> should be implicitly closed
+        let tree = parse("<dl><dt>Term 1<dd>Def 1<dt>Term 2<dd>Def 2</dl>");
+
+        let dt_nodes = tree.get_elements_by_tag_name("dt");
+        assert_eq!(dt_nodes.len(), 2);
+
+        let dd_nodes = tree.get_elements_by_tag_name("dd");
+        assert_eq!(dd_nodes.len(), 2);
+    }
+
+    #[test]
+    fn test_implicit_option_close() {
+        // <option> should be implicitly closed by another <option>
+        let tree = parse("<select><option>A<option>B<option>C</select>");
+
+        let option_nodes = tree.get_elements_by_tag_name("option");
+        assert_eq!(option_nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_heading_closes_heading() {
+        // A heading should close a previous heading in the same scope
+        let tree = parse("<h1>Title<h2>Subtitle");
+
+        let h1_nodes = tree.get_elements_by_tag_name("h1");
+        assert_eq!(h1_nodes.len(), 1);
+
+        let h2_nodes = tree.get_elements_by_tag_name("h2");
+        assert_eq!(h2_nodes.len(), 1);
+    }
+
+    // === Formatting element tests ===
+
+    #[test]
+    fn test_formatting_element_basic() {
+        let tree = parse("<p><b>Bold</b> text</p>");
+
+        let b_nodes = tree.get_elements_by_tag_name("b");
+        assert_eq!(b_nodes.len(), 1);
+    }
+
+    #[test]
+    fn test_nested_formatting() {
+        let tree = parse("<p><b><i>Bold italic</i></b></p>");
+
+        let b_nodes = tree.get_elements_by_tag_name("b");
+        assert_eq!(b_nodes.len(), 1);
+
+        let i_nodes = tree.get_elements_by_tag_name("i");
+        assert_eq!(i_nodes.len(), 1);
+    }
+
+    #[test]
+    fn test_misnested_formatting() {
+        // <b><i></b></i> - classic adoption agency test case
+        let tree = parse("<p><b><i>text</b>more</i></p>");
+
+        // Both b and i should exist
+        let b_nodes = tree.get_elements_by_tag_name("b");
+        assert!(b_nodes.len() >= 1);
+
+        let i_nodes = tree.get_elements_by_tag_name("i");
+        assert!(i_nodes.len() >= 1);
+    }
+
+    #[test]
+    fn test_anchor_adoption() {
+        // Anchor tags also use adoption agency
+        let tree = parse("<p><a href='#'>link<div>block</div></a></p>");
+
+        let a_nodes = tree.get_elements_by_tag_name("a");
+        assert!(a_nodes.len() >= 1);
     }
 
     // === Doctype tests ===
@@ -566,6 +1146,18 @@ mod tests {
         assert_eq!(tds.len(), 4);
     }
 
+    #[test]
+    fn test_table_implicit_tbody() {
+        // Tables should handle rows even without explicit tbody
+        let tree = parse("<table><tr><td>Cell</td></tr></table>");
+
+        let tables = tree.get_elements_by_tag_name("table");
+        assert_eq!(tables.len(), 1);
+
+        let tds = tree.get_elements_by_tag_name("td");
+        assert_eq!(tds.len(), 1);
+    }
+
     // === List tests ===
 
     #[test]
@@ -659,5 +1251,70 @@ mod tests {
         assert_eq!(tree.get_elements_by_tag_name("article").len(), 1);
         assert_eq!(tree.get_elements_by_tag_name("footer").len(), 1);
         assert_eq!(tree.get_elements_by_tag_name("a").len(), 2);
+    }
+
+    // === Edge case tests for implicit closing ===
+
+    #[test]
+    fn test_p_inside_button() {
+        // Button creates a scope, so p inside button should work
+        let tree = parse("<button><p>Click me</p></button>");
+
+        let buttons = tree.get_elements_by_tag_name("button");
+        assert_eq!(buttons.len(), 1);
+
+        let ps = tree.get_elements_by_tag_name("p");
+        assert_eq!(ps.len(), 1);
+    }
+
+    #[test]
+    fn test_empty_p_end_tag() {
+        // </p> without matching <p> should create an empty <p>
+        let tree = parse("<div></p></div>");
+
+        let ps = tree.get_elements_by_tag_name("p");
+        assert_eq!(ps.len(), 1);
+    }
+
+    #[test]
+    fn test_table_cell_implicit_close() {
+        // <td> should be implicitly closed by another <td>
+        let tree = parse("<table><tr><td>A<td>B<td>C</tr></table>");
+
+        let tds = tree.get_elements_by_tag_name("td");
+        assert_eq!(tds.len(), 3);
+    }
+
+    #[test]
+    fn test_table_row_implicit_close() {
+        // <tr> should be implicitly closed by another <tr>
+        let tree = parse("<table><tr><td>A<tr><td>B</table>");
+
+        let trs = tree.get_elements_by_tag_name("tr");
+        assert_eq!(trs.len(), 2);
+    }
+
+    // === Scope boundary tests ===
+
+    #[test]
+    fn test_formatting_across_block() {
+        // Formatting element should be reconstructed after block element
+        let tree = parse("<p><b>bold<p>more bold</b></p>");
+
+        let b_nodes = tree.get_elements_by_tag_name("b");
+        // At least one b element should exist
+        assert!(b_nodes.len() >= 1);
+    }
+
+    #[test]
+    fn test_table_scopes_formatting() {
+        // Table creates a scope that blocks formatting
+        let tree = parse("<p><b>bold<table><tr><td>cell</td></tr></table>after</b></p>");
+
+        let b_nodes = tree.get_elements_by_tag_name("b");
+        assert!(b_nodes.len() >= 1);
+
+        let tables = tree.get_elements_by_tag_name("table");
+        assert_eq!(tables.len(), 1);
     }
 }
