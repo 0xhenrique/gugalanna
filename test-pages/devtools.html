@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DevTools Test Page</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #4a90d9;
+            padding-bottom: 10px;
+        }
+        .box {
+            width: 200px;
+            height: 100px;
+            margin: 10px;
+            padding: 15px;
+            display: inline-block;
+            vertical-align: top;
+        }
+        #box1 {
+            background: #4a90d9;
+            color: white;
+        }
+        #box2 {
+            background: #d94a4a;
+            color: white;
+        }
+        #box3 {
+            background: #4ad94a;
+            color: white;
+        }
+        .info {
+            background: #fff;
+            padding: 15px;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background: #4a90d9;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:hover {
+            background: #357abd;
+        }
+        .nested {
+            margin-left: 20px;
+            padding: 10px;
+            background: #e0e0e0;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>DevTools Test Page</h1>
+
+    <div class="info">
+        <p><strong>Instructions:</strong></p>
+        <ul>
+            <li>Press <strong>F12</strong> to open/close Developer Tools</li>
+            <li>Click <strong>Console</strong> tab to see console messages</li>
+            <li>Click <strong>Elements</strong> tab to see DOM tree</li>
+            <li>Click <strong>Network</strong> tab to see requests</li>
+            <li>Click <strong>Select</strong> button and hover over elements</li>
+        </ul>
+    </div>
+
+    <div id="box1" class="box">
+        Box 1 (Blue)
+        <div class="nested">Nested content</div>
+    </div>
+
+    <div id="box2" class="box">
+        Box 2 (Red)
+    </div>
+
+    <div id="box3" class="box">
+        Box 3 (Green)
+    </div>
+
+    <div style="margin-top: 20px;">
+        <button onclick="logMessage()">Log Message</button>
+        <button onclick="logWarning()">Log Warning</button>
+        <button onclick="logError()">Log Error</button>
+        <button onclick="logAll()">Log All</button>
+    </div>
+
+    <div class="info" style="margin-top: 20px;">
+        <h3>Test Section</h3>
+        <p id="paragraph1">This is a test paragraph with an ID.</p>
+        <p class="test-class">This paragraph has a class.</p>
+        <a href="#">Test Link</a>
+    </div>
+
+    <script>
+        // Initial console messages
+        console.log("Page loaded successfully!");
+        console.info("DevTools test page ready");
+        console.warn("This is a sample warning");
+        console.error("This is a sample error");
+
+        function logMessage() {
+            console.log("Button clicked - Log message at " + new Date().toLocaleTimeString());
+        }
+
+        function logWarning() {
+            console.warn("Button clicked - Warning message");
+        }
+
+        function logError() {
+            console.error("Button clicked - Error message");
+        }
+
+        function logAll() {
+            console.log("Log: Test message");
+            console.info("Info: Information message");
+            console.warn("Warn: Warning message");
+            console.error("Error: Error message");
+            console.debug("Debug: Debug message");
+        }
+    </script>
+</body>
+</html>

@@ -5,6 +5,7 @@
 mod console;
 mod error;
 
+pub use console::{ConsoleMessage, ConsoleMessages, LogLevel, new_console_messages};
 pub use error::JsError;
 
 use std::cell::RefCell;
@@ -21,6 +22,7 @@ pub struct JsRuntime {
     runtime: Runtime,
     context: Context,
     dom: Option<SharedDom>,
+    console_messages: ConsoleMessages,
 }
 
 impl JsRuntime {
@@ -28,16 +30,19 @@ impl JsRuntime {
     pub fn new() -> Result<Self, JsError> {
         let runtime = Runtime::new()?;
         let context = Context::full(&runtime)?;
+        let console_messages = new_console_messages();
 
         // Register console
+        let msgs = console_messages.clone();
         context.with(|ctx| {
-            console::register_console(&ctx)
+            console::register_console(&ctx, msgs)
         })?;
 
         Ok(Self {
             runtime,
             context,
             dom: None,
+            console_messages,
         })
     }
 
@@ -46,10 +51,12 @@ impl JsRuntime {
         let runtime = Runtime::new()?;
         let context = Context::full(&runtime)?;
         let shared_dom = Rc::new(RefCell::new(dom));
+        let console_messages = new_console_messages();
 
         // Register console
+        let msgs = console_messages.clone();
         context.with(|ctx| {
-            console::register_console(&ctx)
+            console::register_console(&ctx, msgs)
         })?;
 
         // Register simplified DOM API
@@ -65,12 +72,28 @@ impl JsRuntime {
             runtime,
             context,
             dom: Some(shared_dom),
+            console_messages,
         })
     }
 
     /// Get a reference to the DOM tree
     pub fn dom(&self) -> Option<&SharedDom> {
         self.dom.as_ref()
+    }
+
+    /// Get all console messages
+    pub fn get_console_messages(&self) -> Vec<ConsoleMessage> {
+        self.console_messages.lock().unwrap().clone()
+    }
+
+    /// Clear all console messages
+    pub fn clear_console_messages(&self) {
+        self.console_messages.lock().unwrap().clear();
+    }
+
+    /// Get the console messages storage (for sharing with DevTools)
+    pub fn console_messages(&self) -> &ConsoleMessages {
+        &self.console_messages
     }
 
     /// Evaluate JavaScript code and return the result as a JsValue

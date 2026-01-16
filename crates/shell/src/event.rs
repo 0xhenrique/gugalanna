@@ -76,6 +76,7 @@ pub const SCANCODE_W: u32 = 26;
 
 // Function keys
 pub const SCANCODE_F5: u32 = 62;
+pub const SCANCODE_F12: u32 = 69;
 
 // Tab key
 pub const SCANCODE_TAB: u32 = 43;

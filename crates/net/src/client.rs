@@ -1,7 +1,9 @@
 //! HTTP client implementation
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, USER_AGENT};
@@ -19,10 +21,45 @@ const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Maximum number of redirects to follow
 const MAX_REDIRECTS: usize = 10;
 
+/// A tracked network request for DevTools
+#[derive(Debug, Clone)]
+pub struct NetworkRequest {
+    /// Unique request ID
+    pub id: usize,
+    /// HTTP method
+    pub method: String,
+    /// Request URL
+    pub url: String,
+    /// Response status (None if pending)
+    pub status: Option<u16>,
+    /// Response body size in bytes
+    pub response_size: Option<usize>,
+    /// Request duration
+    pub duration: Option<Duration>,
+    /// When the request started
+    pub started_at: Instant,
+    /// Request headers
+    pub request_headers: Vec<(String, String)>,
+    /// Response headers
+    pub response_headers: Vec<(String, String)>,
+}
+
+/// Shared network request storage for DevTools
+pub type NetworkRequests = Arc<Mutex<Vec<NetworkRequest>>>;
+
+/// Create a new network request storage
+pub fn new_network_requests() -> NetworkRequests {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
 /// HTTP client for fetching resources
 #[derive(Clone)]
 pub struct HttpClient {
     client: reqwest::Client,
+    /// Optional request tracking for DevTools
+    requests: Option<NetworkRequests>,
+    /// Counter for request IDs
+    next_id: Arc<AtomicUsize>,
 }
 
 impl HttpClient {
@@ -48,7 +85,66 @@ impl HttpClient {
             .build()
             .map_err(|e| NetError::RequestFailed(e.to_string()))?;
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            requests: None,
+            next_id: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
+    /// Create a new HTTP client with request tracking for DevTools
+    pub fn with_tracking(requests: NetworkRequests) -> NetResult<Self> {
+        let mut client = Self::new()?;
+        client.requests = Some(requests);
+        Ok(client)
+    }
+
+    /// Get the next request ID
+    fn next_request_id(&self) -> usize {
+        self.next_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Track start of a request
+    fn track_request_start(&self, method: &str, url: &str, headers: &[(String, String)]) -> Option<usize> {
+        if let Some(ref requests) = self.requests {
+            let id = self.next_request_id();
+            if let Ok(mut reqs) = requests.lock() {
+                reqs.push(NetworkRequest {
+                    id,
+                    method: method.to_string(),
+                    url: url.to_string(),
+                    status: None,
+                    response_size: None,
+                    duration: None,
+                    started_at: Instant::now(),
+                    request_headers: headers.to_vec(),
+                    response_headers: vec![],
+                });
+            }
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    /// Track completion of a request
+    fn track_request_complete(
+        &self,
+        id: usize,
+        status: u16,
+        response_size: usize,
+        response_headers: Vec<(String, String)>,
+    ) {
+        if let Some(ref requests) = self.requests {
+            if let Ok(mut reqs) = requests.lock() {
+                if let Some(req) = reqs.iter_mut().find(|r| r.id == id) {
+                    req.status = Some(status);
+                    req.response_size = Some(response_size);
+                    req.duration = Some(req.started_at.elapsed());
+                    req.response_headers = response_headers;
+                }
+            }
+        }
     }
 
     /// Fetch a URL using GET
@@ -63,6 +159,13 @@ impl HttpClient {
         extra_headers: HashMap<String, String>,
     ) -> NetResult<Response> {
         info!("Fetching: {}", url);
+
+        // Track request start
+        let req_headers: Vec<(String, String)> = extra_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let request_id = self.track_request_start("GET", url.as_str(), &req_headers);
 
         let mut request = self.client.get(url.clone());
 
@@ -98,12 +201,27 @@ impl HttpClient {
 
         debug!("Received {} bytes", body.len());
 
+        // Track request completion
+        if let Some(id) = request_id {
+            let resp_headers: Vec<(String, String)> = headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            self.track_request_complete(id, status, body.len(), resp_headers);
+        }
+
         Ok(Response::new(final_url, status, headers, body))
     }
 
     /// Send a POST request with form data
     pub async fn post_form(&self, url: &Url, form_data: &str) -> NetResult<Response> {
         info!("POST to: {} with data: {}", url, form_data);
+
+        // Track request start
+        let req_headers = vec![
+            ("Content-Type".to_string(), "application/x-www-form-urlencoded".to_string()),
+        ];
+        let request_id = self.track_request_start("POST", url.as_str(), &req_headers);
 
         let response = self
             .client
@@ -132,6 +250,15 @@ impl HttpClient {
         let body = response.bytes().await?.to_vec();
 
         debug!("Received {} bytes", body.len());
+
+        // Track request completion
+        if let Some(id) = request_id {
+            let resp_headers: Vec<(String, String)> = headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            self.track_request_complete(id, status, body.len(), resp_headers);
+        }
 
         Ok(Response::new(final_url, status, headers, body))
     }

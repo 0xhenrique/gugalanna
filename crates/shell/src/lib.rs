@@ -3,6 +3,7 @@
 //! Browser window, event handling, and UI.
 
 mod chrome;
+mod devtools;
 mod event;
 mod form;
 mod image_loader;
@@ -11,6 +12,7 @@ mod navigation;
 mod transition;
 
 pub use chrome::{Chrome, ChromeHit, CHROME_HEIGHT};
+pub use devtools::{DevTools, DevToolsHit, DevToolsTab, DEVTOOLS_HEIGHT};
 pub use loading::{LoadingState, NavigationError, NavigationResult};
 pub use navigation::NavigationState;
 
@@ -172,6 +174,8 @@ pub struct Browser {
     pub config: BrowserConfig,
     backend: SdlBackend,
     chrome: Chrome,
+    /// Developer tools panel
+    devtools: DevTools,
     /// All open tabs
     tabs: Vec<TabState>,
     /// Active tab ID
@@ -210,10 +214,13 @@ impl Browser {
         let tab_infos = vec![(initial_tab_id, initial_tab.title(), false, true)];
         chrome.layout_tabs(&tab_infos, initial_tab_id);
 
+        let devtools = DevTools::new(config.width as f32);
+
         Ok(Self {
             config,
             backend,
             chrome,
+            devtools,
             tabs: vec![initial_tab],
             active_tab_id: initial_tab_id,
             next_tab_id: 1,
@@ -966,7 +973,7 @@ impl Browser {
     fn handle_key(&mut self, scancode: u32, modifiers: Modifiers) -> bool {
         use crate::event::{
             SCANCODE_BACKSPACE, SCANCODE_DOWN, SCANCODE_END, SCANCODE_ESCAPE, SCANCODE_F5,
-            SCANCODE_HOME, SCANCODE_L, SCANCODE_LEFT, SCANCODE_PAGEDOWN, SCANCODE_PAGEUP,
+            SCANCODE_F12, SCANCODE_HOME, SCANCODE_L, SCANCODE_LEFT, SCANCODE_PAGEDOWN, SCANCODE_PAGEUP,
             SCANCODE_Q, SCANCODE_R, SCANCODE_RETURN, SCANCODE_RIGHT, SCANCODE_T, SCANCODE_TAB,
             SCANCODE_UP, SCANCODE_W,
         };
@@ -1050,6 +1057,11 @@ impl Browser {
             // F5: Reload page
             SCANCODE_F5 => {
                 self.reload_page();
+            }
+
+            // F12: Toggle DevTools
+            SCANCODE_F12 => {
+                self.devtools.toggle();
             }
 
             // Escape: Stop loading or blur address bar (no longer quits)
@@ -1567,6 +1579,33 @@ impl Browser {
             return false;
         }
 
+        // Check DevTools panel (if open)
+        if self.devtools.open {
+            if let Some(hit) = self.devtools.hit_test(x, y, self.config.height as f32) {
+                match hit {
+                    DevToolsHit::Tab(tab) => {
+                        self.devtools.active_tab = tab;
+                    }
+                    DevToolsHit::ElementSelector => {
+                        self.devtools.toggle_element_selector();
+                    }
+                    DevToolsHit::Content { local_y, .. } => {
+                        // Handle content clicks (e.g., DOM tree node selection)
+                        if self.devtools.active_tab == DevToolsTab::Elements {
+                            // Calculate which node was clicked based on scroll position
+                            let line_height = 18.0;
+                            let line_index = ((local_y + self.devtools.dom_scroll) / line_height) as usize;
+                            log::debug!("DevTools Elements click at line {}", line_index);
+                        }
+                    }
+                    DevToolsHit::DomNode(node_id) => {
+                        self.devtools.selected_element = Some(node_id);
+                    }
+                }
+                return false;
+            }
+        }
+
         // Blur address bar if clicking outside
         if self.focus == FocusTarget::AddressBar {
             self.blur_address_bar();
@@ -1582,6 +1621,26 @@ impl Browser {
         log::debug!("Click at x={}, y={}, page_y={}", x, y, page_y);
         if page_y >= 0.0 {
             let active_id = self.active_tab_id;
+
+            // Handle element selector mode - clicking selects element for DevTools
+            if self.devtools.element_selector_active {
+                if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
+                    if let Some(ref page) = tab.page {
+                        let content_y = page_y + page.scroll_y;
+                        if let Some(node_id) = hit_test_regions(&page.hit_regions, x, content_y) {
+                            let dom_ref = page.dom.borrow();
+                            // Expand path to the selected node
+                            self.devtools.expand_path_to_node(&dom_ref, NodeId(node_id));
+                            drop(dom_ref);
+                            // Select the element and switch to Elements tab
+                            self.devtools.selected_element = Some(NodeId(node_id));
+                            self.devtools.active_tab = DevToolsTab::Elements;
+                            self.devtools.element_selector_active = false;
+                            return false;
+                        }
+                    }
+                }
+            }
 
             // First check for form elements without mutable borrow
             let form_info = if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
@@ -2149,6 +2208,39 @@ impl Browser {
             self.render_page(&display_list, scroll_y, &form_state, focused_form_node);
         }
 
+        // Render element highlighting for DevTools
+        self.render_element_highlight();
+
+        // Render DevTools panel (if open)
+        if self.devtools.open {
+            // Get console messages from active tab's JS runtime
+            let console_messages = self
+                .active_tab()
+                .and_then(|t| t.page.as_ref())
+                .and_then(|p| p.js_runtime.as_ref())
+                .map(|js| js.get_console_messages())
+                .unwrap_or_default();
+
+            // Network requests (empty for now - will integrate with HttpClient tracking)
+            let network_requests = vec![];
+
+            // Build display list with DOM tree (scope the borrow)
+            let devtools_display_list = {
+                let dom_tree = self
+                    .active_tab()
+                    .and_then(|t| t.page.as_ref())
+                    .map(|p| p.dom.borrow());
+
+                self.devtools.build_display_list(
+                    self.config.height as f32,
+                    &console_messages,
+                    dom_tree.as_deref(),
+                    &network_requests,
+                )
+            };
+            self.backend.render(&devtools_display_list);
+        }
+
         // Present
         self.backend.present();
     }
@@ -2500,6 +2592,94 @@ impl Browser {
             commands: offset_commands,
         };
         self.backend.render(&offset_list);
+    }
+
+    /// Render element highlighting for DevTools (selected element or hover in selector mode)
+    fn render_element_highlight(&mut self) {
+        use gugalanna_layout::Rect;
+        use gugalanna_render::PaintCommand;
+
+        // Determine which element to highlight
+        let highlight_node = if self.devtools.element_selector_active {
+            // In selector mode, highlight hovered element
+            self.hovered_element
+        } else if self.devtools.open {
+            // When DevTools is open, highlight selected element
+            self.devtools.selected_element
+        } else {
+            None
+        };
+
+        let highlight_node = match highlight_node {
+            Some(n) => n,
+            None => return,
+        };
+
+        // Get element bounds from hit regions
+        let bounds = self.active_tab().and_then(|tab| {
+            tab.page.as_ref().and_then(|page| {
+                page.hit_regions
+                    .iter()
+                    .find(|r| r.node_id == highlight_node.0)
+                    .map(|r| {
+                        let y_offset = CHROME_HEIGHT - page.scroll_y;
+                        (r.x, r.y + y_offset, r.width, r.height)
+                    })
+            })
+        });
+
+        let (x, y, width, height) = match bounds {
+            Some(b) => b,
+            None => return,
+        };
+
+        // Don't draw if entirely outside visible area
+        if y + height < CHROME_HEIGHT || y > self.config.height as f32 {
+            return;
+        }
+
+        // Build highlight display list
+        let mut commands = Vec::new();
+
+        // Semi-transparent overlay
+        let overlay_color = if self.devtools.element_selector_active {
+            RenderColor::new(74, 144, 226, 60) // Blue for selector mode
+        } else {
+            RenderColor::new(74, 144, 226, 40) // Lighter blue for selected
+        };
+
+        commands.push(PaintCommand::FillRect {
+            rect: Rect { x, y, width, height },
+            color: overlay_color,
+        });
+
+        // Border
+        let border_color = RenderColor::new(74, 144, 226, 200);
+        let border_width = 2.0;
+
+        // Top border
+        commands.push(PaintCommand::FillRect {
+            rect: Rect { x, y, width, height: border_width },
+            color: border_color,
+        });
+        // Bottom border
+        commands.push(PaintCommand::FillRect {
+            rect: Rect { x, y: y + height - border_width, width, height: border_width },
+            color: border_color,
+        });
+        // Left border
+        commands.push(PaintCommand::FillRect {
+            rect: Rect { x, y, width: border_width, height },
+            color: border_color,
+        });
+        // Right border
+        commands.push(PaintCommand::FillRect {
+            rect: Rect { x: x + width - border_width, y, width: border_width, height },
+            color: border_color,
+        });
+
+        let highlight_list = DisplayList { commands };
+        self.backend.render(&highlight_list);
     }
 }
 
