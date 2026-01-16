@@ -89,10 +89,10 @@ pub struct Cascade {
 }
 
 impl Cascade {
-    /// Create a new cascade with no stylesheets
+    /// Create a new cascade with the default UA stylesheet
     pub fn new() -> Self {
         Self {
-            ua_stylesheets: Vec::new(),
+            ua_stylesheets: vec![default_ua_stylesheet()],
             user_stylesheets: Vec::new(),
             author_stylesheets: Vec::new(),
         }
@@ -284,14 +284,18 @@ impl Default for Cascade {
 /// Default user agent styles for common HTML elements
 pub fn default_ua_stylesheet() -> Stylesheet {
     let css = r#"
+        /* Block elements */
         html, address, blockquote, body, dd, div, dl, dt, fieldset, form,
         frame, frameset, h1, h2, h3, h4, h5, h6, noframes, ol, p, ul, center,
-        dir, hr, menu, pre { display: block; }
+        dir, hr, menu, pre, article, aside, footer, header, main, nav, section,
+        figure, figcaption { display: block; }
 
         li { display: list-item; }
 
-        head, script, style, title, meta, link { display: none; }
+        /* Hidden elements */
+        head, script, style, title, meta, link, noscript, template { display: none; }
 
+        /* Table elements */
         table { display: table; }
         tr { display: table-row; }
         thead { display: table-header-group; }
@@ -302,6 +306,11 @@ pub fn default_ua_stylesheet() -> Stylesheet {
         colgroup { display: table-column-group; }
         col { display: table-column; }
 
+        /* Inline elements */
+        a, abbr, acronym, b, bdo, big, br, cite, code, dfn, em, i, img, kbd,
+        label, q, s, samp, small, span, strong, sub, sup, tt, u, var { display: inline; }
+
+        /* Headings */
         h1 { font-size: 2em; margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }
         h2 { font-size: 1.5em; margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }
         h3 { font-size: 1.17em; margin-top: 1em; margin-bottom: 1em; font-weight: bold; }
@@ -309,21 +318,32 @@ pub fn default_ua_stylesheet() -> Stylesheet {
         h5 { font-size: 0.83em; margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }
         h6 { font-size: 0.67em; margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }
 
+        /* Paragraphs and lists */
         p { margin-top: 1em; margin-bottom: 1em; }
         ul, ol { margin-top: 1em; margin-bottom: 1em; padding-left: 40px; }
         li { margin-top: 0; margin-bottom: 0; }
 
+        /* Links */
         a { color: blue; }
         a:visited { color: purple; }
 
+        /* Text formatting */
         strong, b { font-weight: bold; }
         em, i { font-style: italic; }
         u { text-decoration: underline; }
-        s, strike { text-decoration: line-through; }
+        s, strike, del { text-decoration: line-through; }
 
-        pre, code, tt { font-family: monospace; }
+        /* Monospace */
+        pre, code, tt, kbd, samp { font-family: monospace; }
 
+        /* Form elements - inline-block so they flow with text but have box properties */
+        button, input, select, textarea { display: inline-block; }
+
+        /* Horizontal rule */
         hr { border: 1px solid gray; margin-top: 0.5em; margin-bottom: 0.5em; }
+
+        /* Blockquote */
+        blockquote { margin-left: 40px; margin-right: 40px; margin-top: 1em; margin-bottom: 1em; }
     "#;
 
     Stylesheet::parse(css).unwrap_or_default()
