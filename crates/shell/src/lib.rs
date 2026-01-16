@@ -4,6 +4,7 @@
 
 mod chrome;
 mod event;
+mod form;
 mod loading;
 mod navigation;
 
@@ -17,7 +18,7 @@ use std::rc::Rc;
 use url::Url;
 
 use gugalanna_css::Stylesheet;
-use gugalanna_dom::{DomTree, Queryable};
+use gugalanna_dom::{DomTree, NodeId, Queryable};
 use gugalanna_html::HtmlParser;
 use gugalanna_js::JsRuntime;
 use gugalanna_layout::{build_layout_tree, layout_block, BoxType, ContainingBlock, LayoutBox};
@@ -26,6 +27,7 @@ use gugalanna_render::{build_display_list, CursorType, DisplayList, RenderBacken
 use gugalanna_style::{Cascade, StyleTree};
 
 use crate::event::{poll_events, start_text_input, stop_text_input, BrowserEvent, Modifiers, MouseButton};
+use crate::form::FormState;
 
 /// Browser configuration
 #[derive(Debug, Clone)]
@@ -51,6 +53,8 @@ enum FocusTarget {
     None,
     AddressBar,
     Page,
+    /// A form input element is focused
+    FormInput(NodeId),
 }
 
 /// Scroll constants
@@ -107,6 +111,8 @@ pub struct TabState {
     pub nav_receiver: Option<tokio::sync::mpsc::Receiver<NavigationResult>>,
     /// Cancellation token for current navigation
     pub nav_cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Form state for this tab
+    pub form_state: FormState,
 }
 
 impl TabState {
@@ -119,6 +125,7 @@ impl TabState {
             loading_state: LoadingState::default(),
             nav_receiver: None,
             nav_cancel: None,
+            form_state: FormState::new(),
         }
     }
 
@@ -383,6 +390,29 @@ impl Browser {
         Ok(())
     }
 
+    /// Navigate via POST form submission
+    pub fn navigate_post(&mut self, url: &Url, form_data: &str) -> Result<(), String> {
+        log::info!("POST navigating to: {} with data: {}", url, form_data);
+
+        // Update address bar
+        self.chrome.address_bar.set_text(url.as_str());
+
+        // POST the form data
+        let response = self.fetch_url_post(url, form_data)?;
+
+        if !response.is_success() {
+            return Err(format!("HTTP error: {}", response.status));
+        }
+
+        let html = response.text_lossy();
+        log::info!("Received {} bytes", html.len());
+
+        // Load the page (use final URL from response in case of redirects)
+        self.load_page(response.url, &html)?;
+
+        Ok(())
+    }
+
     /// Navigate to a URL asynchronously (non-blocking)
     ///
     /// This method starts the navigation and returns immediately.
@@ -477,6 +507,20 @@ impl Browser {
 
         // Update address bar
         self.chrome.address_bar.set_text("about:blank");
+
+        // Load with custom CSS
+        self.load_page_with_css(url, html, css)
+    }
+
+    /// Load HTML content from a local file path
+    pub fn load_html_from_file(&mut self, path: &std::path::Path, html: &str, css: &str) -> Result<(), String> {
+        // Convert path to absolute and create file:// URL
+        let abs_path = path.canonicalize().map_err(|e| format!("Invalid path: {}", e))?;
+        let url = Url::from_file_path(&abs_path)
+            .map_err(|_| format!("Cannot create URL from path: {}", abs_path.display()))?;
+
+        // Update address bar
+        self.chrome.address_bar.set_text(url.as_str());
 
         // Load with custom CSS
         self.load_page_with_css(url, html, css)
@@ -705,6 +749,25 @@ impl Browser {
             // No runtime - create one
             let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
             rt.block_on(self.http_client.get(url))
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    /// POST form data to a URL
+    fn fetch_url_post(&self, url: &Url, form_data: &str) -> Result<gugalanna_net::Response, String> {
+        use tokio::runtime::Handle;
+
+        // Check if we're already in a tokio runtime
+        if let Ok(handle) = Handle::try_current() {
+            // We're in an async context - use block_in_place
+            tokio::task::block_in_place(|| {
+                handle.block_on(self.http_client.post_form(url, form_data))
+            })
+            .map_err(|e| e.to_string())
+        } else {
+            // No runtime - create one
+            let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+            rt.block_on(self.http_client.post_form(url, form_data))
                 .map_err(|e| e.to_string())
         }
     }
@@ -980,7 +1043,43 @@ impl Browser {
                 self.blur_address_bar();
             }
 
-            // Scroll keys (only when not editing address bar)
+            // Form input keyboard handling
+            SCANCODE_BACKSPACE if matches!(self.focus, FocusTarget::FormInput(_)) => {
+                if let FocusTarget::FormInput(node_id) = self.focus {
+                    if let Some(tab) = self.tab_mut(self.active_tab_id) {
+                        if let Some(state) = tab.form_state.get_text_mut(node_id) {
+                            state.delete_char_before();
+                        }
+                    }
+                }
+            }
+
+            SCANCODE_LEFT if matches!(self.focus, FocusTarget::FormInput(_)) => {
+                if let FocusTarget::FormInput(node_id) = self.focus {
+                    if let Some(tab) = self.tab_mut(self.active_tab_id) {
+                        if let Some(state) = tab.form_state.get_text_mut(node_id) {
+                            state.move_cursor_left();
+                        }
+                    }
+                }
+            }
+
+            SCANCODE_RIGHT if matches!(self.focus, FocusTarget::FormInput(_)) => {
+                if let FocusTarget::FormInput(node_id) = self.focus {
+                    if let Some(tab) = self.tab_mut(self.active_tab_id) {
+                        if let Some(state) = tab.form_state.get_text_mut(node_id) {
+                            state.move_cursor_right();
+                        }
+                    }
+                }
+            }
+
+            SCANCODE_RETURN if matches!(self.focus, FocusTarget::FormInput(_)) => {
+                // TODO: Submit form or move to next input
+                self.blur_form_input();
+            }
+
+            // Scroll keys (only when not editing address bar or form input)
             SCANCODE_UP if self.focus != FocusTarget::AddressBar => {
                 self.handle_scroll(SCROLL_LINE_HEIGHT);
             }
@@ -1025,10 +1124,21 @@ impl Browser {
 
     /// Handle text input (for address bar)
     fn handle_text_input(&mut self, text: &str) {
-        if self.focus == FocusTarget::AddressBar {
-            for c in text.chars() {
-                self.chrome.address_bar.insert_char(c);
+        match self.focus {
+            FocusTarget::AddressBar => {
+                for c in text.chars() {
+                    self.chrome.address_bar.insert_char(c);
+                }
             }
+            FocusTarget::FormInput(node_id) => {
+                // Insert text into the form input
+                if let Some(tab) = self.tab_mut(self.active_tab_id) {
+                    if let Some(state) = tab.form_state.get_text_mut(node_id) {
+                        state.insert_text(text);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1395,13 +1505,65 @@ impl Browser {
             self.blur_address_bar();
         }
 
+        // Blur form input if clicking outside chrome
+        if let FocusTarget::FormInput(_) = self.focus {
+            self.blur_form_input();
+        }
+
         // Check page content
         let page_y = y - CHROME_HEIGHT;
         log::debug!("Click at x={}, y={}, page_y={}", x, y, page_y);
         if page_y >= 0.0 {
             let active_id = self.active_tab_id;
 
-            // First get the link info without mutable borrow
+            // First check for form elements without mutable borrow
+            let form_info = if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
+                if let Some(ref page) = tab.page {
+                    let content_y = page_y + page.scroll_y;
+
+                    if let Some(node_id) = hit_test_regions(&page.hit_regions, x, content_y) {
+                        let dom_ref = page.dom.borrow();
+                        find_form_element(&dom_ref, NodeId(node_id))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Handle form element click
+            if let Some(ref form_elem) = form_info {
+                log::info!("Form element clicked: {:?}", form_elem);
+                match form_elem {
+                    FormElementInfo::TextInput { node_id, .. } => {
+                        self.focus_form_input(*node_id);
+                        return;
+                    }
+                    FormElementInfo::Checkbox { node_id } => {
+                        self.toggle_checkbox(*node_id);
+                        return;
+                    }
+                    FormElementInfo::Radio { node_id, name } => {
+                        self.select_radio(*node_id, name);
+                        return;
+                    }
+                    FormElementInfo::Submit { node_id } => {
+                        log::info!("Submit button clicked (node {})", node_id.0);
+                        self.submit_form(*node_id);
+                        return;
+                    }
+                    FormElementInfo::Button { node_id } => {
+                        log::info!("Button clicked (node {})", node_id.0);
+                        // Dispatch to JS if available
+                        return;
+                    }
+                }
+            }
+
+            // Check for link
             let link_info = if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
                 if let Some(ref page) = tab.page {
                     let content_y = page_y + page.scroll_y;
@@ -1476,6 +1638,155 @@ impl Browser {
         stop_text_input();
     }
 
+    /// Focus a form text input
+    fn focus_form_input(&mut self, node_id: NodeId) {
+        self.focus = FocusTarget::FormInput(node_id);
+        start_text_input();
+
+        // Ensure the input has state
+        if let Some(tab) = self.tab_mut(self.active_tab_id) {
+            tab.form_state.ensure_text(node_id);
+        }
+    }
+
+    /// Blur a form text input
+    fn blur_form_input(&mut self) {
+        self.focus = FocusTarget::None;
+        stop_text_input();
+    }
+
+    /// Toggle a checkbox
+    fn toggle_checkbox(&mut self, node_id: NodeId) {
+        if let Some(tab) = self.tab_mut(self.active_tab_id) {
+            tab.form_state.toggle_checked(node_id);
+        }
+    }
+
+    /// Select a radio button (and deselect others in the same group)
+    fn select_radio(&mut self, node_id: NodeId, group_name: &str) {
+        let active_id = self.active_tab_id;
+
+        // First, find all radio buttons in the same group and deselect them
+        let radios_to_deselect: Vec<NodeId> = if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
+            if let Some(ref page) = tab.page {
+                let dom = page.dom.borrow();
+                find_radio_buttons_in_group(&dom, group_name)
+                    .into_iter()
+                    .filter(|id| *id != node_id)
+                    .collect()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
+        // Now update the form state
+        if let Some(tab) = self.tab_mut(active_id) {
+            for id in radios_to_deselect {
+                tab.form_state.set_checked(id, false);
+            }
+            tab.form_state.set_checked(node_id, true);
+        }
+    }
+
+    /// Submit a form
+    fn submit_form(&mut self, submit_button_id: NodeId) {
+        let active_id = self.active_tab_id;
+
+        // Collect form data
+        let submit_data = if let Some(tab) = self.tabs.iter().find(|t| t.id == active_id) {
+            if let Some(ref page) = tab.page {
+                let dom = page.dom.borrow();
+
+                // Find the parent form
+                let form_id = match find_parent_form(&dom, submit_button_id) {
+                    Some(id) => id,
+                    None => {
+                        log::warn!("Submit button has no parent form");
+                        return;
+                    }
+                };
+
+                // Get form attributes
+                let (action, method) = if let Some(node) = dom.get(form_id) {
+                    if let Some(elem) = node.as_element() {
+                        (
+                            elem.get_attribute("action").unwrap_or("").to_string(),
+                            elem.get_attribute("method").unwrap_or("get").to_lowercase(),
+                        )
+                    } else {
+                        ("".to_string(), "get".to_string())
+                    }
+                } else {
+                    ("".to_string(), "get".to_string())
+                };
+
+                // Collect form data
+                let fields = collect_form_data(&dom, form_id, &tab.form_state);
+                let query_string = build_form_data_string(&fields);
+
+                // Get base URL for resolving action
+                let base_url = page.url.clone();
+
+                Some((action, method, query_string, base_url))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Now perform navigation (outside the borrow)
+        if let Some((action, method, query_string, base_url)) = submit_data {
+            log::info!("Form submit: action={}, method={}, data={}", action, method, query_string);
+
+            if method == "get" {
+                // Build URL with query string
+                let target_url = if action.is_empty() {
+                    // Submit to current URL
+                    let mut url = base_url.clone();
+                    url.set_query(if query_string.is_empty() { None } else { Some(&query_string) });
+                    url.to_string()
+                } else {
+                    // Resolve action URL
+                    match resolve_link_url(&base_url, &action) {
+                        Ok(mut url) => {
+                            url.set_query(if query_string.is_empty() { None } else { Some(&query_string) });
+                            url.to_string()
+                        }
+                        Err(e) => {
+                            log::error!("Failed to resolve form action URL: {}", e);
+                            return;
+                        }
+                    }
+                };
+
+                // Navigate to the form submission URL
+                if let Err(e) = self.navigate(&target_url) {
+                    log::error!("Form submission failed: {}", e);
+                }
+            } else {
+                // POST submission
+                let target_url = if action.is_empty() {
+                    base_url.clone()
+                } else {
+                    match resolve_link_url(&base_url, &action) {
+                        Ok(url) => url,
+                        Err(e) => {
+                            log::error!("Failed to resolve form action URL: {}", e);
+                            return;
+                        }
+                    }
+                };
+
+                if let Err(e) = self.navigate_post(&target_url, &query_string) {
+                    log::error!("Form POST submission failed: {}", e);
+                }
+            }
+        }
+    }
+
     /// Handle mouse movement (for cursor changes on link hover)
     fn handle_mouse_move(&mut self, x: f32, y: f32) {
         let is_over_link = self.is_over_link(x, y);
@@ -1526,13 +1837,24 @@ impl Browser {
         self.backend.render(&chrome_display_list);
 
         // Render page content (offset by chrome height and scroll)
-        // Clone the display list and scroll_y to avoid borrow issues
+        // Clone the display list, scroll_y, and form state to avoid borrow issues
         let page_data = self
             .active_tab()
-            .and_then(|t| t.page.as_ref())
-            .map(|p| (p.display_list.clone(), p.scroll_y));
-        if let Some((display_list, scroll_y)) = page_data {
-            self.render_page(&display_list, scroll_y);
+            .map(|t| {
+                let display_list = t.page.as_ref().map(|p| p.display_list.clone());
+                let scroll_y = t.page.as_ref().map(|p| p.scroll_y).unwrap_or(0.0);
+                let form_state = t.form_state.clone();
+                (display_list, scroll_y, form_state)
+            });
+
+        // Get the focused form node_id if any
+        let focused_form_node = match self.focus {
+            FocusTarget::FormInput(node_id) => Some(node_id),
+            _ => None,
+        };
+
+        if let Some((Some(display_list), scroll_y, form_state)) = page_data {
+            self.render_page(&display_list, scroll_y, &form_state, focused_form_node);
         }
 
         // Present
@@ -1540,7 +1862,13 @@ impl Browser {
     }
 
     /// Render page content with Y offset (chrome height) and scroll offset
-    fn render_page(&mut self, display_list: &DisplayList, scroll_y: f32) {
+    fn render_page(
+        &mut self,
+        display_list: &DisplayList,
+        scroll_y: f32,
+        form_state: &crate::form::FormState,
+        focused_form_node: Option<NodeId>,
+    ) {
         use gugalanna_layout::Rect;
         use gugalanna_render::PaintCommand;
 
@@ -1554,17 +1882,30 @@ impl Browser {
         for cmd in &display_list.commands {
             match cmd {
                 PaintCommand::FillRect { rect, color } => {
-                    let new_y = rect.y + y_offset;
-                    // Skip if completely off-screen (above chrome or below viewport)
-                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                    let mut new_y = rect.y + y_offset;
+                    let mut height = rect.height;
+
+                    // Skip if completely off-screen
+                    if new_y + height < CHROME_HEIGHT || new_y > viewport_bottom {
                         continue;
                     }
+
+                    // Clip to chrome area (don't render above chrome)
+                    if new_y < CHROME_HEIGHT {
+                        let clip_amount = CHROME_HEIGHT - new_y;
+                        new_y = CHROME_HEIGHT;
+                        height -= clip_amount;
+                        if height <= 0.0 {
+                            continue;
+                        }
+                    }
+
                     offset_commands.push(PaintCommand::FillRect {
                         rect: Rect {
                             x: rect.x,
                             y: new_y,
                             width: rect.width,
-                            height: rect.height,
+                            height,
                         },
                         color: *color,
                     });
@@ -1577,8 +1918,8 @@ impl Browser {
                     font_size,
                 } => {
                     let new_y = *y + y_offset;
-                    // Skip if text is off-screen (approximate with font_size as height)
-                    if new_y + *font_size < CHROME_HEIGHT || new_y > viewport_bottom {
+                    // Skip if text is off-screen or in chrome area
+                    if new_y + *font_size < CHROME_HEIGHT || new_y > viewport_bottom || new_y < CHROME_HEIGHT {
                         continue;
                     }
                     offset_commands.push(PaintCommand::DrawText {
@@ -1595,8 +1936,8 @@ impl Browser {
                     color,
                 } => {
                     let new_y = rect.y + y_offset;
-                    // Skip if completely off-screen
-                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom {
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom || new_y < CHROME_HEIGHT {
                         continue;
                     }
                     offset_commands.push(PaintCommand::DrawBorder {
@@ -1608,6 +1949,115 @@ impl Browser {
                         },
                         widths: *widths,
                         color: *color,
+                    });
+                }
+                PaintCommand::DrawTextInput {
+                    node_id,
+                    rect,
+                    text: _,
+                    cursor_pos: _,
+                    is_password,
+                    is_focused: _,
+                } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom || new_y < CHROME_HEIGHT {
+                        continue;
+                    }
+                    // Get actual text value and cursor position from form state
+                    let is_focused = focused_form_node == Some(*node_id);
+                    let (text, cursor_pos) = if let Some(state) = form_state.get_text(*node_id) {
+                        (state.value.clone(), if is_focused { Some(state.cursor_pos) } else { None })
+                    } else {
+                        (String::new(), None)
+                    };
+                    offset_commands.push(PaintCommand::DrawTextInput {
+                        node_id: *node_id,
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        text,
+                        cursor_pos,
+                        is_password: *is_password,
+                        is_focused,
+                    });
+                }
+                PaintCommand::DrawCheckbox {
+                    node_id,
+                    rect,
+                    checked: _,
+                    is_focused: _,
+                } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom || new_y < CHROME_HEIGHT {
+                        continue;
+                    }
+                    // Get actual checked state from form state
+                    let checked = form_state.is_checked(*node_id);
+                    let is_focused = focused_form_node == Some(*node_id);
+                    offset_commands.push(PaintCommand::DrawCheckbox {
+                        node_id: *node_id,
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        checked,
+                        is_focused,
+                    });
+                }
+                PaintCommand::DrawRadio {
+                    node_id,
+                    rect,
+                    checked: _,
+                    is_focused: _,
+                } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom || new_y < CHROME_HEIGHT {
+                        continue;
+                    }
+                    // Get actual checked state from form state
+                    let checked = form_state.is_checked(*node_id);
+                    let is_focused = focused_form_node == Some(*node_id);
+                    offset_commands.push(PaintCommand::DrawRadio {
+                        node_id: *node_id,
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        checked,
+                        is_focused,
+                    });
+                }
+                PaintCommand::DrawButton {
+                    node_id,
+                    rect,
+                    text,
+                    is_pressed,
+                } => {
+                    let new_y = rect.y + y_offset;
+                    // Skip if off-screen or in chrome area
+                    if new_y + rect.height < CHROME_HEIGHT || new_y > viewport_bottom || new_y < CHROME_HEIGHT {
+                        continue;
+                    }
+                    offset_commands.push(PaintCommand::DrawButton {
+                        node_id: *node_id,
+                        rect: Rect {
+                            x: rect.x,
+                            y: new_y,
+                            width: rect.width,
+                            height: rect.height,
+                        },
+                        text: text.clone(),
+                        is_pressed: *is_pressed,
                     });
                 }
             }
@@ -1639,6 +2089,8 @@ fn build_hit_regions_recursive(layout: &LayoutBox, regions: &mut Vec<HitRegion>,
         BoxType::Block(id, _) => Some(id.0),
         BoxType::Inline(id, _) => Some(id.0),
         BoxType::Text(id, _, _) => Some(id.0),
+        BoxType::Input(id, _, _) => Some(id.0),
+        BoxType::Button(id, _, _) => Some(id.0),
         BoxType::AnonymousBlock | BoxType::AnonymousInline => None,
     };
 
@@ -1723,6 +2175,83 @@ fn find_anchor_href(dom: &DomTree, start_id: gugalanna_dom::NodeId) -> Option<(S
     None
 }
 
+/// Information about a form element that was clicked
+#[derive(Debug, Clone)]
+enum FormElementInfo {
+    /// Text or password input
+    TextInput { node_id: NodeId, is_password: bool },
+    /// Checkbox
+    Checkbox { node_id: NodeId },
+    /// Radio button
+    Radio { node_id: NodeId, name: String },
+    /// Submit button
+    Submit { node_id: NodeId },
+    /// Regular button
+    Button { node_id: NodeId },
+}
+
+/// Find form element info for a clicked node
+fn find_form_element(dom: &DomTree, start_id: NodeId) -> Option<FormElementInfo> {
+    let mut current_id = Some(start_id);
+
+    while let Some(id) = current_id {
+        if let Some(node) = dom.get(id) {
+            if let Some(elem) = node.as_element() {
+                match elem.tag_name.as_str() {
+                    "input" => {
+                        let input_type = elem.get_attribute("type").unwrap_or("text");
+                        match input_type {
+                            "text" => return Some(FormElementInfo::TextInput { node_id: id, is_password: false }),
+                            "password" => return Some(FormElementInfo::TextInput { node_id: id, is_password: true }),
+                            "checkbox" => return Some(FormElementInfo::Checkbox { node_id: id }),
+                            "radio" => {
+                                let name = elem.get_attribute("name").unwrap_or("").to_string();
+                                return Some(FormElementInfo::Radio { node_id: id, name });
+                            }
+                            "submit" => return Some(FormElementInfo::Submit { node_id: id }),
+                            "button" => return Some(FormElementInfo::Button { node_id: id }),
+                            _ => {}
+                        }
+                    }
+                    "button" => {
+                        let btn_type = elem.get_attribute("type").unwrap_or("submit");
+                        if btn_type == "submit" {
+                            return Some(FormElementInfo::Submit { node_id: id });
+                        } else {
+                            return Some(FormElementInfo::Button { node_id: id });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            current_id = node.parent;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+/// Find all radio buttons with a given name attribute in the DOM
+fn find_radio_buttons_in_group(dom: &DomTree, group_name: &str) -> Vec<NodeId> {
+    let mut result = Vec::new();
+
+    // Get all elements and find inputs with type="radio" and matching name
+    for element in dom.get_elements_by_tag_name("input") {
+        if let Some(node) = dom.get(element) {
+            if let Some(elem) = node.as_element() {
+                if elem.get_attribute("type") == Some("radio") {
+                    if elem.get_attribute("name") == Some(group_name) {
+                        result.push(element);
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Resolve a link href against the current page URL
 fn resolve_link_url(base_url: &Url, href: &str) -> Result<Url, String> {
     // Handle empty href (link to self)
@@ -1737,6 +2266,172 @@ fn resolve_link_url(base_url: &Url, href: &str) -> Result<Url, String> {
         return Ok(url);
     }
 
-    // Use url crate's join() for relative resolution
+    // If href is an absolute URL, parse it directly
+    if href.contains("://") {
+        return Url::parse(href).map_err(|e| e.to_string());
+    }
+
+    // Check if base URL can be used as a base (about:blank, data:, etc. cannot)
+    if base_url.cannot_be_a_base() {
+        return Err(format!(
+            "Cannot resolve relative path '{}' against '{}'. \
+             The current page URL doesn't support relative path resolution. \
+             Use an absolute URL instead.",
+            href, base_url.scheme()
+        ));
+    }
+
+    // Handle file:// URLs specially since they can't use join() for relative paths
+    if base_url.scheme() == "file" {
+        // For file:// URLs, we can't properly resolve server-relative paths like "/search"
+        // because there's no server. Return an error with a helpful message.
+        if href.starts_with('/') {
+            return Err(format!(
+                "Cannot resolve server-relative path '{}' for local file. \
+                 Form submission from file:// URLs requires an absolute action URL.",
+                href
+            ));
+        }
+
+        // For relative paths, try to resolve against the file's directory
+        if let Some(path) = base_url.to_file_path().ok() {
+            if let Some(parent) = path.parent() {
+                let resolved = parent.join(href);
+                return Url::from_file_path(resolved)
+                    .map_err(|_| format!("Invalid file path: {}", href));
+            }
+        }
+
+        return Err("Cannot resolve relative URL for file:// base".to_string());
+    }
+
+    // Use url crate's join() for relative resolution (for http/https URLs)
     base_url.join(href).map_err(|e| e.to_string())
+}
+
+/// Find the parent form element for a given node
+fn find_parent_form(dom: &DomTree, start_id: NodeId) -> Option<NodeId> {
+    let mut current_id = Some(start_id);
+
+    while let Some(id) = current_id {
+        if let Some(node) = dom.get(id) {
+            if let Some(elem) = node.as_element() {
+                if elem.tag_name == "form" {
+                    return Some(id);
+                }
+            }
+            current_id = node.parent;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+/// Form field data for submission
+#[derive(Debug)]
+struct FormField {
+    name: String,
+    value: String,
+}
+
+/// Collect all form fields from a form element
+fn collect_form_data(
+    dom: &DomTree,
+    form_id: NodeId,
+    form_state: &crate::form::FormState,
+) -> Vec<FormField> {
+    let mut fields = Vec::new();
+
+    // Get all input elements under the form
+    for input_id in dom.get_elements_by_tag_name("input") {
+        // Check if this input is a descendant of the form
+        if !is_descendant_of(dom, input_id, form_id) {
+            continue;
+        }
+
+        if let Some(node) = dom.get(input_id) {
+            if let Some(elem) = node.as_element() {
+                let name = match elem.get_attribute("name") {
+                    Some(n) if !n.is_empty() => n.to_string(),
+                    _ => continue, // Skip inputs without a name
+                };
+
+                let input_type = elem.get_attribute("type").unwrap_or("text");
+                match input_type {
+                    "text" | "password" | "hidden" => {
+                        // Get value from form state or attribute
+                        let value = form_state
+                            .get_value(input_id)
+                            .map(|v| v.to_string())
+                            .or_else(|| elem.get_attribute("value").map(|v| v.to_string()))
+                            .unwrap_or_default();
+                        fields.push(FormField { name, value });
+                    }
+                    "checkbox" => {
+                        if form_state.is_checked(input_id) {
+                            let value = elem.get_attribute("value").unwrap_or("on").to_string();
+                            fields.push(FormField { name, value });
+                        }
+                    }
+                    "radio" => {
+                        if form_state.is_checked(input_id) {
+                            let value = elem.get_attribute("value").unwrap_or("on").to_string();
+                            fields.push(FormField { name, value });
+                        }
+                    }
+                    "submit" | "button" => {
+                        // Submit buttons are not included in form data unless clicked
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fields
+}
+
+/// Check if a node is a descendant of another node
+fn is_descendant_of(dom: &DomTree, node_id: NodeId, ancestor_id: NodeId) -> bool {
+    let mut current_id = Some(node_id);
+    while let Some(id) = current_id {
+        if id == ancestor_id {
+            return true;
+        }
+        if let Some(node) = dom.get(id) {
+            current_id = node.parent;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
+/// URL-encode a string for form submission
+fn url_encode(s: &str) -> String {
+    let mut encoded = String::new();
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => {
+                encoded.push(c);
+            }
+            ' ' => encoded.push('+'),
+            _ => {
+                for b in c.to_string().as_bytes() {
+                    encoded.push_str(&format!("%{:02X}", b));
+                }
+            }
+        }
+    }
+    encoded
+}
+
+/// Build URL-encoded form data string
+fn build_form_data_string(fields: &[FormField]) -> String {
+    fields
+        .iter()
+        .map(|f| format!("{}={}", url_encode(&f.name), url_encode(&f.value)))
+        .collect::<Vec<_>>()
+        .join("&")
 }

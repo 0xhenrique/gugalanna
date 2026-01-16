@@ -224,6 +224,151 @@ impl SdlBackend {
             self.draw_rect(x + w as i32 - right as i32, y, right as u32, h, color);
         }
     }
+
+    /// Draw a text input field
+    fn draw_text_input(
+        &mut self,
+        rect: &gugalanna_layout::Rect,
+        text: &str,
+        cursor_pos: Option<usize>,
+        is_password: bool,
+        is_focused: bool,
+    ) {
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width as u32;
+        let h = rect.height as u32;
+
+        // Background
+        let bg_color = if is_focused {
+            RenderColor::rgb(255, 255, 255)
+        } else {
+            RenderColor::rgb(250, 250, 250)
+        };
+        self.draw_rect(x, y, w, h, bg_color);
+
+        // Border
+        let border_color = if is_focused {
+            RenderColor::rgb(0, 120, 212)
+        } else {
+            RenderColor::rgb(180, 180, 180)
+        };
+        self.draw_border(rect.x, rect.y, rect.width, rect.height, 1.0, 1.0, 1.0, 1.0, border_color);
+
+        // Text (or dots for password)
+        if !text.is_empty() {
+            let display_text = if is_password {
+                "\u{2022}".repeat(text.chars().count())
+            } else {
+                text.to_string()
+            };
+            self.draw_text(&display_text, rect.x + 4.0, rect.y + 4.0, RenderColor::black(), 14.0);
+        }
+
+        // Cursor
+        if let Some(pos) = cursor_pos {
+            let cursor_x = rect.x + 4.0 + (pos as f32 * 8.0);
+            self.draw_rect(
+                cursor_x as i32,
+                y + 2,
+                1,
+                h.saturating_sub(4),
+                RenderColor::black(),
+            );
+        }
+    }
+
+    /// Draw a checkbox
+    fn draw_checkbox(&mut self, rect: &gugalanna_layout::Rect, checked: bool, is_focused: bool) {
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let size = rect.width.min(rect.height) as u32;
+
+        // Background
+        self.draw_rect(x, y, size, size, RenderColor::rgb(255, 255, 255));
+
+        // Border
+        let border_color = if is_focused {
+            RenderColor::rgb(0, 120, 212)
+        } else {
+            RenderColor::rgb(128, 128, 128)
+        };
+        self.draw_border(rect.x, rect.y, size as f32, size as f32, 1.0, 1.0, 1.0, 1.0, border_color);
+
+        // Checkmark
+        if checked {
+            // Draw a simple checkmark using two diagonal lines
+            let inset = 3;
+            let inner_size = size.saturating_sub(inset * 2);
+            let check_color = RenderColor::rgb(0, 120, 212);
+
+            // Simple checkmark: draw a small filled rectangle in center
+            self.draw_rect(
+                x + inset as i32 + 2,
+                y + inset as i32 + 2,
+                inner_size.saturating_sub(4),
+                inner_size.saturating_sub(4),
+                check_color,
+            );
+        }
+    }
+
+    /// Draw a radio button
+    fn draw_radio(&mut self, rect: &gugalanna_layout::Rect, checked: bool, is_focused: bool) {
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let size = rect.width.min(rect.height) as u32;
+
+        // Background (circular approximated with filled rect)
+        self.draw_rect(x, y, size, size, RenderColor::rgb(255, 255, 255));
+
+        // Border
+        let border_color = if is_focused {
+            RenderColor::rgb(0, 120, 212)
+        } else {
+            RenderColor::rgb(128, 128, 128)
+        };
+        self.draw_border(rect.x, rect.y, size as f32, size as f32, 1.0, 1.0, 1.0, 1.0, border_color);
+
+        // Inner dot when checked
+        if checked {
+            let inset = 4;
+            let inner_size = size.saturating_sub(inset * 2);
+            self.draw_rect(
+                x + inset as i32,
+                y + inset as i32,
+                inner_size,
+                inner_size,
+                RenderColor::rgb(0, 120, 212),
+            );
+        }
+    }
+
+    /// Draw a button
+    fn draw_button(&mut self, rect: &gugalanna_layout::Rect, text: &str, is_pressed: bool) {
+        let x = rect.x as i32;
+        let y = rect.y as i32;
+        let w = rect.width as u32;
+        let h = rect.height as u32;
+
+        // Background
+        let bg_color = if is_pressed {
+            RenderColor::rgb(200, 200, 200)
+        } else {
+            RenderColor::rgb(240, 240, 240)
+        };
+        self.draw_rect(x, y, w, h, bg_color);
+
+        // Border
+        self.draw_border(rect.x, rect.y, rect.width, rect.height, 1.0, 1.0, 1.0, 1.0, RenderColor::rgb(128, 128, 128));
+
+        // Centered text
+        // Calculate approximate text width (8px per character at 14px font)
+        let text_width = text.len() as f32 * 8.0;
+        let text_x = rect.x + (rect.width - text_width) / 2.0;
+        let text_y = rect.y + (rect.height - 14.0) / 2.0;
+        self.draw_text(text, text_x, text_y, RenderColor::black(), 14.0);
+    }
 }
 
 impl RenderBackend for SdlBackend {
@@ -259,6 +404,18 @@ impl RenderBackend for SdlBackend {
                         widths.left,
                         *color,
                     );
+                }
+                PaintCommand::DrawTextInput { rect, text, cursor_pos, is_password, is_focused, .. } => {
+                    self.draw_text_input(rect, text, *cursor_pos, *is_password, *is_focused);
+                }
+                PaintCommand::DrawCheckbox { rect, checked, is_focused, .. } => {
+                    self.draw_checkbox(rect, *checked, *is_focused);
+                }
+                PaintCommand::DrawRadio { rect, checked, is_focused, .. } => {
+                    self.draw_radio(rect, *checked, *is_focused);
+                }
+                PaintCommand::DrawButton { rect, text, is_pressed, .. } => {
+                    self.draw_button(rect, text, *is_pressed);
                 }
             }
         }

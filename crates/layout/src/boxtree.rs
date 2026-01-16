@@ -18,6 +18,45 @@ pub struct LayoutBox<'a> {
     pub children: Vec<LayoutBox<'a>>,
 }
 
+/// Type of form input element for layout purposes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputType {
+    /// Text input field
+    Text,
+    /// Password input field (displays dots)
+    Password,
+    /// Checkbox
+    Checkbox,
+    /// Radio button
+    Radio,
+    /// Submit button
+    Submit,
+    /// Generic button
+    Button,
+    /// Hidden input (no visual representation)
+    Hidden,
+}
+
+impl InputType {
+    /// Parse input type from HTML type attribute
+    pub fn from_str(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "password" => InputType::Password,
+            "checkbox" => InputType::Checkbox,
+            "radio" => InputType::Radio,
+            "submit" => InputType::Submit,
+            "button" => InputType::Button,
+            "hidden" => InputType::Hidden,
+            _ => InputType::Text, // Default to text
+        }
+    }
+
+    /// Check if this input type is visually rendered
+    pub fn is_visible(&self) -> bool {
+        !matches!(self, InputType::Hidden)
+    }
+}
+
 /// Type of layout box
 #[derive(Debug)]
 pub enum BoxType<'a> {
@@ -31,6 +70,10 @@ pub enum BoxType<'a> {
     AnonymousBlock,
     /// Anonymous inline box
     AnonymousInline,
+    /// Form input element (replaced element with intrinsic size)
+    Input(NodeId, InputType, &'a ComputedStyle),
+    /// Button element
+    Button(NodeId, String, &'a ComputedStyle),
 }
 
 impl<'a> LayoutBox<'a> {
@@ -61,6 +104,24 @@ impl<'a> LayoutBox<'a> {
         }
     }
 
+    /// Create a new input box (for form inputs)
+    pub fn new_input(node_id: NodeId, input_type: InputType, style: &'a ComputedStyle) -> Self {
+        Self {
+            dimensions: Dimensions::default(),
+            box_type: BoxType::Input(node_id, input_type, style),
+            children: Vec::new(),
+        }
+    }
+
+    /// Create a new button box
+    pub fn new_button(node_id: NodeId, label: String, style: &'a ComputedStyle) -> Self {
+        Self {
+            dimensions: Dimensions::default(),
+            box_type: BoxType::Button(node_id, label, style),
+            children: Vec::new(),
+        }
+    }
+
     /// Create an anonymous block box
     pub fn new_anonymous_block() -> Self {
         Self {
@@ -76,6 +137,8 @@ impl<'a> LayoutBox<'a> {
             BoxType::Block(_, style) => Some(style),
             BoxType::Inline(_, style) => Some(style),
             BoxType::Text(_, _, style) => Some(style),
+            BoxType::Input(_, _, style) => Some(style),
+            BoxType::Button(_, _, style) => Some(style),
             BoxType::AnonymousBlock | BoxType::AnonymousInline => None,
         }
     }
@@ -86,6 +149,8 @@ impl<'a> LayoutBox<'a> {
             BoxType::Block(id, _) => Some(*id),
             BoxType::Inline(id, _) => Some(*id),
             BoxType::Text(id, _, _) => Some(*id),
+            BoxType::Input(id, _, _) => Some(*id),
+            BoxType::Button(id, _, _) => Some(*id),
             BoxType::AnonymousBlock | BoxType::AnonymousInline => None,
         }
     }
@@ -100,6 +165,7 @@ impl<'a> LayoutBox<'a> {
         matches!(
             self.box_type,
             BoxType::Inline(_, _) | BoxType::Text(_, _, _) | BoxType::AnonymousInline
+                | BoxType::Input(_, _, _) | BoxType::Button(_, _, _)
         )
     }
 
@@ -226,6 +292,37 @@ fn build_children<'a>(
                     continue;
                 }
 
+                // Check for form elements first
+                if let Some(elem) = node.as_element() {
+                    match elem.tag_name.as_str() {
+                        "input" => {
+                            let input_type_str = elem.get_attribute("type").unwrap_or("text");
+                            let input_type = InputType::from_str(input_type_str);
+
+                            // Skip hidden inputs
+                            if !input_type.is_visible() {
+                                continue;
+                            }
+
+                            let child_box = LayoutBox::new_input(child_id, input_type, child_style);
+                            let container = parent_box.get_inline_container();
+                            container.children.push(child_box);
+                            continue;
+                        }
+                        "button" => {
+                            // Get button label from text content
+                            let label = get_text_content(dom, child_id);
+                            let label = if label.is_empty() { "Button".to_string() } else { label };
+
+                            let child_box = LayoutBox::new_button(child_id, label, child_style);
+                            let container = parent_box.get_inline_container();
+                            container.children.push(child_box);
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+
                 let child_box = match child_style.display {
                     Display::Block | Display::Flex => {
                         let mut b = LayoutBox::new_block(child_id, child_style);
@@ -292,6 +389,25 @@ fn find_parent_style<'a>(
     }
 
     None
+}
+
+/// Extract text content from an element and its descendants
+fn get_text_content(dom: &DomTree, node_id: NodeId) -> String {
+    let mut text = String::new();
+    get_text_content_recursive(dom, node_id, &mut text);
+    collapse_whitespace(&text)
+}
+
+fn get_text_content_recursive(dom: &DomTree, node_id: NodeId, text: &mut String) {
+    for child_id in dom.children(node_id) {
+        if let Some(node) = dom.get(child_id) {
+            if let Some(t) = node.as_text() {
+                text.push_str(t);
+            } else if node.is_element() {
+                get_text_content_recursive(dom, child_id, text);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

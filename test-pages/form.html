@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Form Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        form {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        p {
+            margin: 10px 0;
+        }
+        label {
+            display: inline;
+        }
+    </style>
+</head>
+<body>
+    <h1>Form Test Page</h1>
+
+    <form action="/search" method="get">
+        <p>
+            <label>Name: </label>
+            <input type="text" name="name" value="">
+        </p>
+        <p>
+            <label>Password: </label>
+            <input type="password" name="pass">
+        </p>
+        <p>
+            <label>
+                <input type="checkbox" name="remember"> Remember me
+            </label>
+        </p>
+        <p>
+            <label><input type="radio" name="color" value="red"> Red</label>
+            <label><input type="radio" name="color" value="blue"> Blue</label>
+            <label><input type="radio" name="color" value="green"> Green</label>
+        </p>
+        <p>
+            <input type="submit" value="Submit">
+            <button type="button">Cancel</button>
+        </p>
+    </form>
+
+    <h2>More Input Types</h2>
+    <p>
+        Text input: <input type="text" name="text1">
+    </p>
+    <p>
+        Another checkbox: <input type="checkbox" name="check1">
+    </p>
+</body>
+</html>

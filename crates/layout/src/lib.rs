@@ -7,7 +7,7 @@ mod block;
 mod inline;
 mod text;
 
-pub use boxtree::{LayoutBox, BoxType, build_layout_tree};
+pub use boxtree::{LayoutBox, BoxType, InputType, build_layout_tree};
 pub use block::layout_block;
 pub use inline::{LineBox, InlineBox};
 pub use text::TextMetrics;

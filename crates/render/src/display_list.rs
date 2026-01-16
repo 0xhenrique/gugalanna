@@ -2,7 +2,8 @@
 //!
 //! Converts layout tree to paint commands.
 
-use gugalanna_layout::{LayoutBox, BoxType, Rect};
+use gugalanna_dom::NodeId;
+use gugalanna_layout::{LayoutBox, BoxType, InputType, Rect};
 
 use crate::paint::RenderColor;
 
@@ -33,6 +34,36 @@ pub enum PaintCommand {
         rect: Rect,
         widths: BorderWidths,
         color: RenderColor,
+    },
+    /// Draw a text input field
+    DrawTextInput {
+        node_id: NodeId,
+        rect: Rect,
+        text: String,
+        cursor_pos: Option<usize>,
+        is_password: bool,
+        is_focused: bool,
+    },
+    /// Draw a checkbox
+    DrawCheckbox {
+        node_id: NodeId,
+        rect: Rect,
+        checked: bool,
+        is_focused: bool,
+    },
+    /// Draw a radio button
+    DrawRadio {
+        node_id: NodeId,
+        rect: Rect,
+        checked: bool,
+        is_focused: bool,
+    },
+    /// Draw a button
+    DrawButton {
+        node_id: NodeId,
+        rect: Rect,
+        text: String,
+        is_pressed: bool,
     },
 }
 
@@ -161,18 +192,79 @@ fn render_borders(list: &mut DisplayList, layout_box: &LayoutBox, offset_x: f32,
     });
 }
 
-/// Render text content
+/// Render text content and form elements
 fn render_content(list: &mut DisplayList, layout_box: &LayoutBox, abs_x: f32, abs_y: f32) {
-    if let BoxType::Text(_, text, style) = &layout_box.box_type {
-        let color: RenderColor = style.color.into();
+    match &layout_box.box_type {
+        BoxType::Text(_, text, style) => {
+            let color: RenderColor = style.color.into();
 
-        list.push(PaintCommand::DrawText {
-            text: text.clone(),
-            x: abs_x,
-            y: abs_y,
-            color,
-            font_size: style.font_size,
-        });
+            list.push(PaintCommand::DrawText {
+                text: text.clone(),
+                x: abs_x,
+                y: abs_y,
+                color,
+                font_size: style.font_size,
+            });
+        }
+        BoxType::Input(node_id, input_type, _) => {
+            let d = &layout_box.dimensions;
+            let rect = Rect::new(abs_x, abs_y, d.content.width, d.content.height);
+            let node_id = *node_id;
+
+            match input_type {
+                InputType::Text | InputType::Password => {
+                    // Text input - rendered with placeholder text and no cursor initially
+                    list.push(PaintCommand::DrawTextInput {
+                        node_id,
+                        rect,
+                        text: String::new(),
+                        cursor_pos: None,
+                        is_password: matches!(input_type, InputType::Password),
+                        is_focused: false,
+                    });
+                }
+                InputType::Checkbox => {
+                    list.push(PaintCommand::DrawCheckbox {
+                        node_id,
+                        rect,
+                        checked: false,
+                        is_focused: false,
+                    });
+                }
+                InputType::Radio => {
+                    list.push(PaintCommand::DrawRadio {
+                        node_id,
+                        rect,
+                        checked: false,
+                        is_focused: false,
+                    });
+                }
+                InputType::Submit | InputType::Button => {
+                    // Submit/button input rendered as button
+                    list.push(PaintCommand::DrawButton {
+                        node_id,
+                        rect,
+                        text: "Submit".to_string(),
+                        is_pressed: false,
+                    });
+                }
+                InputType::Hidden => {
+                    // Hidden inputs don't render anything
+                }
+            }
+        }
+        BoxType::Button(node_id, label, _) => {
+            let d = &layout_box.dimensions;
+            let rect = Rect::new(abs_x, abs_y, d.content.width, d.content.height);
+
+            list.push(PaintCommand::DrawButton {
+                node_id: *node_id,
+                rect,
+                text: label.clone(),
+                is_pressed: false,
+            });
+        }
+        _ => {}
     }
 }
 

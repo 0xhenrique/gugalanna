@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+gugalanna-dom.workspace = true
 gugalanna-layout.workspace = true
 gugalanna-style.workspace = true
 gugalanna-css.workspace = true

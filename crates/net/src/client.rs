@@ -100,6 +100,41 @@ impl HttpClient {
 
         Ok(Response::new(final_url, status, headers, body))
     }
+
+    /// Send a POST request with form data
+    pub async fn post_form(&self, url: &Url, form_data: &str) -> NetResult<Response> {
+        info!("POST to: {} with data: {}", url, form_data);
+
+        let response = self
+            .client
+            .post(url.clone())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_data.to_string())
+            .send()
+            .await?;
+
+        let final_url = response.url().clone();
+        let status = response.status().as_u16();
+
+        debug!("Response status: {}", status);
+
+        // Convert headers
+        let headers: HashMap<String, String> = response
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|val| (k.as_str().to_lowercase(), val.to_string()))
+            })
+            .collect();
+
+        let body = response.bytes().await?.to_vec();
+
+        debug!("Received {} bytes", body.len());
+
+        Ok(Response::new(final_url, status, headers, body))
+    }
 }
 
 impl Default for HttpClient {

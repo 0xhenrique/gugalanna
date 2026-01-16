@@ -2,7 +2,7 @@
 //!
 //! Implements inline formatting context and line box layout.
 
-use crate::boxtree::{LayoutBox, BoxType};
+use crate::boxtree::{LayoutBox, BoxType, InputType};
 use crate::text::measure_text;
 use crate::Rect;
 
@@ -79,7 +79,11 @@ pub fn layout_inline_children(parent: &mut LayoutBox) {
     // Final line
     cursor_y += line_height;
 
-    // Set parent height based on inline content
+    // Set parent dimensions based on inline content
+    // For inline elements (which set width to f32::MAX), shrink-wrap to content
+    if parent.dimensions.content.width == f32::MAX || parent.dimensions.content.width == 0.0 {
+        parent.dimensions.content.width = max_width;
+    }
     if parent.dimensions.content.height == 0.0 {
         parent.dimensions.content.height = cursor_y;
     }
@@ -99,6 +103,10 @@ fn layout_inline_box(layout_box: &mut LayoutBox, _available_width: f32) -> (f32,
             // Apply style edges
             layout_box.apply_style_edges();
 
+            // For inline elements, set a large available width so children don't wrap
+            // The inline element will shrink-wrap to its content
+            layout_box.dimensions.content.width = f32::MAX;
+
             // Layout children
             layout_inline_children(layout_box);
 
@@ -117,6 +125,63 @@ fn layout_inline_box(layout_box: &mut LayoutBox, _available_width: f32) -> (f32,
         BoxType::Block(_, _) => {
             // Block inside inline - treat as inline-block
             // This shouldn't happen in well-formed content
+            (0.0, 0.0)
+        }
+        BoxType::Input(_, input_type, _) => {
+            // Form input elements have intrinsic dimensions
+            // Copy input_type before mutable borrow
+            let input_type = *input_type;
+            layout_box.apply_style_edges();
+
+            let (width, height) = input_intrinsic_size(input_type);
+            layout_box.dimensions.content.width = width;
+            layout_box.dimensions.content.height = height;
+
+            (
+                layout_box.dimensions.margin_box_width(),
+                layout_box.dimensions.margin_box_height(),
+            )
+        }
+        BoxType::Button(_, label, _) => {
+            // Button size based on label text - get style from layout_box
+            // Clone label before mutable borrow
+            let label = label.clone();
+            layout_box.apply_style_edges();
+
+            let style = layout_box.style().unwrap();
+            let metrics = measure_text(&label, style);
+            // Add padding for button appearance
+            let width = metrics.width + 16.0; // 8px padding on each side
+            let height = metrics.height.max(24.0); // Minimum height of 24px
+
+            layout_box.dimensions.content.width = width;
+            layout_box.dimensions.content.height = height;
+
+            (
+                layout_box.dimensions.margin_box_width(),
+                layout_box.dimensions.margin_box_height(),
+            )
+        }
+    }
+}
+
+/// Get intrinsic size for a form input based on type
+fn input_intrinsic_size(input_type: InputType) -> (f32, f32) {
+    match input_type {
+        InputType::Text | InputType::Password => {
+            // Default text input size
+            (200.0, 24.0)
+        }
+        InputType::Checkbox | InputType::Radio => {
+            // Small square/circle for checkboxes and radios
+            (16.0, 16.0)
+        }
+        InputType::Submit | InputType::Button => {
+            // Button with default size
+            (80.0, 24.0)
+        }
+        InputType::Hidden => {
+            // Hidden inputs have no size
             (0.0, 0.0)
         }
     }

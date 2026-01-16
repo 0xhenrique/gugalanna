@@ -179,8 +179,8 @@ fn run_file(path_str: &str) -> Result<(), String> {
 
     let mut browser = Browser::new(config)?;
 
-    // Load HTML content directly
-    browser.load_html(&html, &css)?;
+    // Load HTML content from file (with proper file:// URL)
+    browser.load_html_from_file(path, &html, &css)?;
 
     browser.run()
 }
