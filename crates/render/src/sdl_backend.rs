@@ -2,6 +2,7 @@
 //!
 //! Implements rendering using SDL2.
 
+use sdl2::mouse::{Cursor, SystemCursor};
 use sdl2::pixels::{Color as SdlColor, PixelFormatEnum};
 use sdl2::rect::Rect as SdlRect;
 use sdl2::render::{BlendMode, Canvas, TextureCreator};
@@ -13,6 +14,13 @@ use crate::font::FontCache;
 use crate::paint::RenderColor;
 use crate::RenderBackend;
 
+/// Cursor type for link hover
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorType {
+    Arrow,
+    Hand,
+}
+
 /// SDL2-based render backend
 pub struct SdlBackend {
     sdl_context: Sdl,
@@ -21,6 +29,8 @@ pub struct SdlBackend {
     font_cache: FontCache,
     width: u32,
     height: u32,
+    cursor_arrow: Cursor,
+    cursor_hand: Cursor,
 }
 
 impl SdlBackend {
@@ -46,6 +56,12 @@ impl SdlBackend {
         let texture_creator = canvas.texture_creator();
         let font_cache = FontCache::new();
 
+        // Create cursors for hover states
+        let cursor_arrow = Cursor::from_system(SystemCursor::Arrow)
+            .map_err(|e| e.to_string())?;
+        let cursor_hand = Cursor::from_system(SystemCursor::Hand)
+            .map_err(|e| e.to_string())?;
+
         Ok(Self {
             sdl_context,
             canvas,
@@ -53,7 +69,17 @@ impl SdlBackend {
             font_cache,
             width,
             height,
+            cursor_arrow,
+            cursor_hand,
         })
+    }
+
+    /// Set the mouse cursor type
+    pub fn set_cursor(&self, cursor_type: CursorType) {
+        match cursor_type {
+            CursorType::Arrow => self.cursor_arrow.set(),
+            CursorType::Hand => self.cursor_hand.set(),
+        }
     }
 
     /// Get the SDL context for event handling

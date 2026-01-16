@@ -20,7 +20,7 @@ use gugalanna_html::HtmlParser;
 use gugalanna_js::JsRuntime;
 use gugalanna_layout::{build_layout_tree, layout_block, BoxType, ContainingBlock, LayoutBox};
 use gugalanna_net::HttpClient;
-use gugalanna_render::{build_display_list, DisplayList, RenderBackend, RenderColor, SdlBackend};
+use gugalanna_render::{build_display_list, CursorType, DisplayList, RenderBackend, RenderColor, SdlBackend};
 use gugalanna_style::{Cascade, StyleTree};
 
 use crate::event::{poll_events, start_text_input, stop_text_input, BrowserEvent, MouseButton};
@@ -96,6 +96,7 @@ pub struct Browser {
     page: Option<PageState>,
     focus: FocusTarget,
     http_client: HttpClient,
+    current_cursor: CursorType,
 }
 
 impl Browser {
@@ -116,6 +117,7 @@ impl Browser {
             page: None,
             focus: FocusTarget::None,
             http_client,
+            current_cursor: CursorType::Arrow,
         })
     }
 
@@ -457,6 +459,11 @@ impl Browser {
                         self.handle_scroll(delta);
                     }
 
+                    BrowserEvent::MouseMove { x, y } => {
+                        log::trace!("MouseMove: x={}, y={}", x, y);
+                        self.handle_mouse_move(x, y);
+                    }
+
                     BrowserEvent::WindowResize { width, height } => {
                         self.config.width = width;
                         self.config.height = height;
@@ -578,6 +585,33 @@ impl Browser {
         }
     }
 
+    /// Scroll to an element with the given ID (fragment)
+    fn scroll_to_fragment(&mut self, fragment: &str) {
+        if fragment.is_empty() {
+            return;
+        }
+
+        if let Some(ref mut page) = self.page {
+            let dom_ref = page.dom.borrow();
+
+            // Find element by ID
+            if let Some(element_id) = dom_ref.get_element_by_id(fragment) {
+                // Find hit region for this element to get Y position
+                for region in &page.hit_regions {
+                    if region.node_id == element_id.0 {
+                        // Scroll to put element at top of viewport
+                        let max_scroll = (page.content_height - page.viewport_height).max(0.0);
+                        page.scroll_y = region.y.clamp(0.0, max_scroll);
+                        log::debug!("Scrolling to fragment '{}' at y={}", fragment, region.y);
+                        break;
+                    }
+                }
+            } else {
+                log::debug!("Fragment '{}' not found in document", fragment);
+            }
+        }
+    }
+
     /// Re-layout the page with new viewport dimensions
     fn relayout_page(&mut self) {
         if let Some(ref mut page) = self.page {
@@ -665,14 +699,47 @@ impl Browser {
 
         // Check page content
         let page_y = y - CHROME_HEIGHT;
+        log::debug!("Click at x={}, y={}, page_y={}", x, y, page_y);
         if page_y >= 0.0 {
             if let Some(ref mut page) = self.page {
                 // Adjust for scroll: click at page_y corresponds to content at page_y + scroll_y
                 let content_y = page_y + page.scroll_y;
+                log::debug!("Content y={}, hit_regions count={}", content_y, page.hit_regions.len());
                 // Hit test page
                 if let Some(node_id) = hit_test_regions(&page.hit_regions, x, content_y) {
                     log::debug!("Page click on node {}", node_id);
-                    // Dispatch click to JS
+
+                    // Check if this is a link click
+                    let link_info = {
+                        let dom_ref = page.dom.borrow();
+                        find_anchor_href(&dom_ref, gugalanna_dom::NodeId(node_id))
+                            .map(|(href, _)| (href, page.url.clone()))
+                    };
+
+                    if let Some((href, base_url)) = link_info {
+                        log::info!("Link clicked: {}", href);
+
+                        // Handle fragment-only links (same page scroll)
+                        if href.starts_with('#') {
+                            self.scroll_to_fragment(&href[1..]);
+                            return;
+                        }
+
+                        // Resolve the URL and navigate
+                        match resolve_link_url(&base_url, &href) {
+                            Ok(target_url) => {
+                                if let Err(e) = self.navigate(target_url.as_str()) {
+                                    log::error!("Link navigation failed: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to resolve URL '{}': {}", href, e);
+                            }
+                        }
+                        return;
+                    }
+
+                    // Not a link - dispatch click to JS
                     if let Some(ref rt) = page.js_runtime {
                         if let Err(e) = rt.dispatch_click(node_id) {
                             log::warn!("Click dispatch failed: {}", e);
@@ -696,6 +763,44 @@ impl Browser {
         self.focus = FocusTarget::None;
         self.chrome.address_bar.is_focused = false;
         stop_text_input();
+    }
+
+    /// Handle mouse movement (for cursor changes on link hover)
+    fn handle_mouse_move(&mut self, x: f32, y: f32) {
+        let is_over_link = self.is_over_link(x, y);
+
+        let desired_cursor = if is_over_link {
+            CursorType::Hand
+        } else {
+            CursorType::Arrow
+        };
+
+        if desired_cursor != self.current_cursor {
+            self.current_cursor = desired_cursor;
+            self.backend.set_cursor(desired_cursor);
+        }
+    }
+
+    /// Check if mouse position is over a link
+    fn is_over_link(&self, x: f32, y: f32) -> bool {
+        // Skip if in chrome area
+        if y < CHROME_HEIGHT {
+            return false;
+        }
+
+        if let Some(ref page) = self.page {
+            let content_y = (y - CHROME_HEIGHT) + page.scroll_y;
+
+            if let Some(node_id) = hit_test_regions(&page.hit_regions, x, content_y) {
+                let dom_ref = page.dom.borrow();
+                let result = find_anchor_href(&dom_ref, gugalanna_dom::NodeId(node_id));
+                if result.is_some() {
+                    log::debug!("Over link! node_id={}, href={:?}", node_id, result.as_ref().map(|(h, _)| h));
+                }
+                return result.is_some();
+            }
+        }
+        false
     }
 
     /// Render the browser
@@ -802,12 +907,16 @@ impl Browser {
 /// Build hit regions from layout tree
 fn build_hit_regions(layout: &LayoutBox) -> Vec<HitRegion> {
     let mut regions = Vec::new();
-    build_hit_regions_recursive(layout, &mut regions);
+    build_hit_regions_recursive(layout, &mut regions, 0.0, 0.0);
     regions
 }
 
-fn build_hit_regions_recursive(layout: &LayoutBox, regions: &mut Vec<HitRegion>) {
-    let rect = &layout.dimensions.content;
+fn build_hit_regions_recursive(layout: &LayoutBox, regions: &mut Vec<HitRegion>, offset_x: f32, offset_y: f32) {
+    let d = &layout.dimensions;
+
+    // Calculate absolute position of this box's content area
+    let abs_x = offset_x + d.content.x;
+    let abs_y = offset_y + d.content.y;
 
     // Get node ID from box type
     let node_id = match &layout.box_type {
@@ -818,20 +927,20 @@ fn build_hit_regions_recursive(layout: &LayoutBox, regions: &mut Vec<HitRegion>)
     };
 
     if let Some(id) = node_id {
-        if rect.width > 0.0 && rect.height > 0.0 {
+        if d.content.width > 0.0 && d.content.height > 0.0 {
             regions.push(HitRegion {
-                x: rect.x,
-                y: rect.y,
-                width: rect.width,
-                height: rect.height,
+                x: abs_x,
+                y: abs_y,
+                width: d.content.width,
+                height: d.content.height,
                 node_id: id,
             });
         }
     }
 
-    // Process children
+    // Process children - they are positioned relative to this box's content area
     for child in &layout.children {
-        build_hit_regions_recursive(child, regions);
+        build_hit_regions_recursive(child, regions, abs_x, abs_y);
     }
 }
 
@@ -866,4 +975,52 @@ fn extract_style_content(dom: &DomTree, style_id: gugalanna_dom::NodeId) -> Opti
     } else {
         Some(css_content)
     }
+}
+
+/// Walk up the DOM tree to find an anchor element with href attribute
+fn find_anchor_href(dom: &DomTree, start_id: gugalanna_dom::NodeId) -> Option<(String, gugalanna_dom::NodeId)> {
+    let mut current_id = Some(start_id);
+    let mut depth = 0;
+
+    while let Some(id) = current_id {
+        if let Some(node) = dom.get(id) {
+            if let Some(elem) = node.as_element() {
+                log::trace!("find_anchor_href: depth={} id={} tag={}", depth, id.0, elem.tag_name);
+                if elem.tag_name == "a" {
+                    if let Some(href) = elem.get_attribute("href") {
+                        log::debug!("Found anchor with href='{}' at depth {}", href, depth);
+                        return Some((href.to_string(), id));
+                    } else {
+                        log::debug!("Found anchor without href at depth {}", depth);
+                    }
+                }
+            } else if let Some(_text) = node.as_text() {
+                log::trace!("find_anchor_href: depth={} id={} text node", depth, id.0);
+            }
+            current_id = node.parent;
+            depth += 1;
+        } else {
+            break;
+        }
+    }
+    log::trace!("find_anchor_href: no anchor found after {} levels", depth);
+    None
+}
+
+/// Resolve a link href against the current page URL
+fn resolve_link_url(base_url: &Url, href: &str) -> Result<Url, String> {
+    // Handle empty href (link to self)
+    if href.is_empty() {
+        return Ok(base_url.clone());
+    }
+
+    // Fragment-only link (same page scroll)
+    if href.starts_with('#') {
+        let mut url = base_url.clone();
+        url.set_fragment(Some(&href[1..]));
+        return Ok(url);
+    }
+
+    // Use url crate's join() for relative resolution
+    base_url.join(href).map_err(|e| e.to_string())
 }

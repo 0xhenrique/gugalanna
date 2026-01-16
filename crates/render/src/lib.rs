@@ -9,7 +9,7 @@ mod font;
 
 pub use display_list::{DisplayList, PaintCommand, BorderWidths, build_display_list};
 pub use paint::RenderColor;
-pub use sdl_backend::SdlBackend;
+pub use sdl_backend::{SdlBackend, CursorType};
 pub use font::{FontCache, GlyphData};
 
 /// Trait for render backends

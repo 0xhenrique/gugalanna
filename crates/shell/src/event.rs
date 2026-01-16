@@ -9,6 +9,8 @@ pub enum BrowserEvent {
     Quit,
     /// Mouse button pressed
     MouseDown { x: f32, y: f32, button: MouseButton },
+    /// Mouse moved
+    MouseMove { x: f32, y: f32 },
     /// Mouse wheel scrolled
     MouseWheel { x: i32, y: i32 },
     /// Key pressed
@@ -32,6 +34,7 @@ pub enum MouseButton {
 const SDL_QUIT: u32 = 0x100;
 const SDL_KEYDOWN: u32 = 0x300;
 const SDL_TEXTINPUT: u32 = 0x303;
+const SDL_MOUSEMOTION: u32 = 0x400;
 const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
 const SDL_MOUSEWHEEL: u32 = 0x403;
 const SDL_WINDOWEVENT: u32 = 0x200;
@@ -89,6 +92,14 @@ pub fn poll_events() -> Vec<BrowserEvent> {
                             });
                         }
                     }
+                }
+
+                SDL_MOUSEMOTION => {
+                    let motion_event = raw_event.motion;
+                    events.push(BrowserEvent::MouseMove {
+                        x: motion_event.x as f32,
+                        y: motion_event.y as f32,
+                    });
                 }
 
                 SDL_MOUSEBUTTONDOWN => {
