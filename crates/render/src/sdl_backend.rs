@@ -2,9 +2,9 @@
 //!
 //! Implements rendering using SDL2.
 
-use sdl2::pixels::Color as SdlColor;
+use sdl2::pixels::{Color as SdlColor, PixelFormatEnum};
 use sdl2::rect::Rect as SdlRect;
-use sdl2::render::{Canvas, TextureCreator};
+use sdl2::render::{BlendMode, Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use sdl2::Sdl;
 
@@ -110,7 +110,7 @@ impl SdlBackend {
         }
     }
 
-    /// Draw a glyph bitmap at a position
+    /// Draw a glyph bitmap at a position using texture blitting
     fn draw_glyph_bitmap(
         &mut self,
         bitmap: &[u8],
@@ -120,25 +120,43 @@ impl SdlBackend {
         y: i32,
         color: RenderColor,
     ) {
-        // Simple pixel-by-pixel drawing
-        // This is not efficient but works for now
-        for row in 0..height {
-            for col in 0..width {
-                let idx = (row * width + col) as usize;
-                let alpha = bitmap.get(idx).copied().unwrap_or(0);
-
-                if alpha > 0 {
-                    let blended_alpha = ((alpha as u32 * color.a as u32) / 255) as u8;
-                    self.canvas.set_draw_color(SdlColor::RGBA(
-                        color.r,
-                        color.g,
-                        color.b,
-                        blended_alpha,
-                    ));
-                    let _ = self.canvas.draw_point((x + col as i32, y + row as i32));
-                }
-            }
+        if width == 0 || height == 0 || bitmap.is_empty() {
+            return;
         }
+
+        // Create RGBA pixel data from the alpha-only bitmap
+        let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
+        for &alpha in bitmap.iter().take((width * height) as usize) {
+            // Pre-multiply color with alpha for proper blending
+            let blended_alpha = ((alpha as u32 * color.a as u32) / 255) as u8;
+            rgba_data.push(color.r);
+            rgba_data.push(color.g);
+            rgba_data.push(color.b);
+            rgba_data.push(blended_alpha);
+        }
+
+        // Create a streaming texture for this glyph
+        let mut texture = match self.texture_creator.create_texture_streaming(
+            PixelFormatEnum::RGBA32,
+            width,
+            height,
+        ) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        // Set blend mode for alpha transparency
+        texture.set_blend_mode(BlendMode::Blend);
+
+        // Update texture with pixel data
+        let pitch = (width * 4) as usize;
+        if texture.update(None, &rgba_data, pitch).is_err() {
+            return;
+        }
+
+        // Blit the texture to the canvas
+        let dst_rect = SdlRect::new(x, y, width, height);
+        let _ = self.canvas.copy(&texture, None, dst_rect);
     }
 
     /// Draw a border (four rectangles)
