@@ -15,7 +15,7 @@ use std::rc::Rc;
 use url::Url;
 
 use gugalanna_css::Stylesheet;
-use gugalanna_dom::Queryable;
+use gugalanna_dom::{DomTree, Queryable};
 use gugalanna_html::HtmlParser;
 use gugalanna_js::JsRuntime;
 use gugalanna_layout::{build_layout_tree, layout_block, BoxType, ContainingBlock, LayoutBox};
@@ -72,6 +72,10 @@ struct PageState {
     content_height: f32,
     /// Visible viewport height (window height - chrome height)
     viewport_height: f32,
+    /// DOM tree (for re-layout on resize)
+    dom: Rc<RefCell<DomTree>>,
+    /// CSS cascade (for re-layout on resize)
+    cascade: Cascade,
 }
 
 /// Hit region for click handling
@@ -201,9 +205,13 @@ impl Browser {
             cascade.add_author_stylesheet(stylesheet);
         }
 
+        // Calculate viewport (below chrome)
+        let viewport_width = self.config.width as f32;
+        let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
+
         // Build style and layout trees
         let dom_ref = shared_dom.borrow();
-        let style_tree = StyleTree::build(&*dom_ref, &cascade);
+        let style_tree = StyleTree::build(&*dom_ref, &cascade, viewport_width, viewport_height);
 
         let body_ids = dom_ref.get_elements_by_tag_name("body");
         let root_id = if !body_ids.is_empty() {
@@ -211,10 +219,6 @@ impl Browser {
         } else {
             dom_ref.document_id()
         };
-
-        // Calculate viewport (below chrome)
-        let viewport_width = self.config.width as f32;
-        let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
 
         let mut layout_tree = match build_layout_tree(&*dom_ref, &style_tree, root_id) {
             Some(tree) => tree,
@@ -255,6 +259,8 @@ impl Browser {
             scroll_y: 0.0,
             content_height,
             viewport_height,
+            dom: shared_dom.clone(),
+            cascade,
         });
 
         log::info!(
@@ -338,8 +344,12 @@ impl Browser {
             cascade.add_author_stylesheet(stylesheet);
         }
 
+        // Calculate viewport (below chrome)
+        let viewport_width = self.config.width as f32;
+        let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
+
         let dom_ref = shared_dom.borrow();
-        let style_tree = StyleTree::build(&*dom_ref, &cascade);
+        let style_tree = StyleTree::build(&*dom_ref, &cascade, viewport_width, viewport_height);
 
         let body_ids = dom_ref.get_elements_by_tag_name("body");
         let root_id = if !body_ids.is_empty() {
@@ -347,9 +357,6 @@ impl Browser {
         } else {
             dom_ref.document_id()
         };
-
-        let viewport_width = self.config.width as f32;
-        let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
 
         let mut layout_tree = match build_layout_tree(&*dom_ref, &style_tree, root_id) {
             Some(tree) => tree,
@@ -382,6 +389,8 @@ impl Browser {
             scroll_y: 0.0,
             content_height,
             viewport_height,
+            dom: shared_dom.clone(),
+            cascade,
         });
 
         Ok(())
@@ -425,7 +434,7 @@ impl Browser {
                         self.config.width = width;
                         self.config.height = height;
                         self.chrome.update_width(width as f32);
-                        // TODO: re-layout page
+                        self.relayout_page();
                     }
                 }
             }
@@ -539,6 +548,52 @@ impl Browser {
         if let Some(ref mut page) = self.page {
             let max_scroll = (page.content_height - page.viewport_height).max(0.0);
             page.scroll_y = max_scroll;
+        }
+    }
+
+    /// Re-layout the page with new viewport dimensions
+    fn relayout_page(&mut self) {
+        if let Some(ref mut page) = self.page {
+            let viewport_width = self.config.width as f32;
+            let viewport_height = self.config.height as f32 - CHROME_HEIGHT;
+
+            let dom_ref = page.dom.borrow();
+
+            // Rebuild style tree with new viewport dimensions
+            let style_tree = StyleTree::build(&*dom_ref, &page.cascade, viewport_width, viewport_height);
+
+            // Get root element
+            let body_ids = dom_ref.get_elements_by_tag_name("body");
+            let root_id = if !body_ids.is_empty() {
+                body_ids[0]
+            } else {
+                dom_ref.document_id()
+            };
+
+            // Build and perform layout
+            if let Some(mut layout_tree) = build_layout_tree(&*dom_ref, &style_tree, root_id) {
+                layout_block(
+                    &mut layout_tree,
+                    ContainingBlock::new(viewport_width, viewport_height),
+                );
+
+                // Update content height
+                let content_height = layout_tree.dimensions.margin_box_height();
+
+                // Rebuild display list and hit regions
+                let display_list = build_display_list(&layout_tree);
+                let hit_regions = build_hit_regions(&layout_tree);
+
+                // Update page state
+                page.display_list = display_list;
+                page.hit_regions = hit_regions;
+                page.content_height = content_height;
+                page.viewport_height = viewport_height;
+
+                // Clamp scroll position to new content bounds
+                let max_scroll = (content_height - viewport_height).max(0.0);
+                page.scroll_y = page.scroll_y.clamp(0.0, max_scroll);
+            }
         }
     }
 

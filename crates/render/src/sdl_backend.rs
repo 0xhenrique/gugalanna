@@ -32,6 +32,7 @@ impl SdlBackend {
         let window = video_subsystem
             .window(title, width, height)
             .position_centered()
+            .resizable()
             .build()
             .map_err(|e| e.to_string())?;
 

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Viewport Resize Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            font-size: 16px;
+        }
+
+        h1 {
+            display: block;
+            font-size: 24px;
+            margin-bottom: 20px;
+        }
+
+        .info {
+            display: block;
+            margin-bottom: 20px;
+        }
+
+        /* Full-width block using vw */
+        .full-width {
+            display: block;
+            width: 80vw;
+            height: 50px;
+            background-color: #3498db;
+            margin-bottom: 20px;
+        }
+
+        /* Half-viewport height block */
+        .half-height {
+            display: block;
+            width: 200px;
+            height: 30vh;
+            background-color: #e74c3c;
+            margin-bottom: 20px;
+        }
+
+        /* Fixed width for comparison */
+        .fixed-width {
+            display: block;
+            width: 400px;
+            height: 50px;
+            background-color: #27ae60;
+            margin-bottom: 20px;
+        }
+
+        /* Combined vw and vh */
+        .responsive-box {
+            display: block;
+            width: 50vw;
+            height: 20vh;
+            background-color: #9b59b6;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Viewport Resize Test</h1>
+
+    <div class="info">Resize the window to see viewport units in action.</div>
+
+    <div class="info">Blue: 80vw width (changes with window width)</div>
+    <div class="full-width"></div>
+
+    <div class="info">Red: 30vh height (changes with window height)</div>
+    <div class="half-height"></div>
+
+    <div class="info">Green: 400px fixed width (does not change)</div>
+    <div class="fixed-width"></div>
+
+    <div class="info">Purple: 50vw x 20vh (changes both dimensions)</div>
+    <div class="responsive-box"></div>
+</body>
+</html>

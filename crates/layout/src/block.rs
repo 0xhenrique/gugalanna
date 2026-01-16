@@ -161,7 +161,7 @@ mod tests {
         if !css.is_empty() {
             cascade.add_author_stylesheet(Stylesheet::parse(css).unwrap());
         }
-        let style_tree = Box::leak(Box::new(StyleTree::build(dom, &cascade)));
+        let style_tree = Box::leak(Box::new(StyleTree::build(dom, &cascade, 1024.0, 768.0)));
 
         // Find the first div element (our test target)
         let div_ids = dom.get_elements_by_tag_name("div");

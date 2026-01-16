@@ -29,9 +29,16 @@ impl StyleTree {
     }
 
     /// Build a style tree from DOM and cascade
-    pub fn build(tree: &DomTree, cascade: &Cascade) -> Self {
+    ///
+    /// viewport_width and viewport_height are used for resolving vw/vh units.
+    pub fn build(
+        tree: &DomTree,
+        cascade: &Cascade,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Self {
         let mut style_tree = Self::new();
-        let mut context = ResolveContext::default();
+        let mut context = ResolveContext::default().with_viewport(viewport_width, viewport_height);
 
         let root_id = tree.document_id();
         style_tree.root = Some(root_id);
@@ -343,7 +350,7 @@ mod tests {
             Stylesheet::parse("div { display: block; color: blue; }").unwrap()
         );
 
-        let style_tree = StyleTree::build(&tree, &cascade);
+        let style_tree = StyleTree::build(&tree, &cascade, 1024.0, 768.0);
         let style = style_tree.get_style(div_id).unwrap();
 
         assert_eq!(style.display, Display::Block);
@@ -360,7 +367,7 @@ mod tests {
             Stylesheet::parse("div { color: red; font-size: 20px; }").unwrap()
         );
 
-        let style_tree = StyleTree::build(&tree, &cascade);
+        let style_tree = StyleTree::build(&tree, &cascade, 1024.0, 768.0);
 
         // Div should have the explicit color
         let div_style = style_tree.get_style(div_id).unwrap();
@@ -384,7 +391,7 @@ mod tests {
             Stylesheet::parse("div { margin-left: 50px; }").unwrap()
         );
 
-        let style_tree = StyleTree::build(&tree, &cascade);
+        let style_tree = StyleTree::build(&tree, &cascade, 1024.0, 768.0);
 
         // Div should have the margin
         let div_style = style_tree.get_style(div_id).unwrap();
@@ -406,7 +413,7 @@ mod tests {
             Stylesheet::parse("div { font-size: 20px; } span { font-size: 2em; }").unwrap()
         );
 
-        let style_tree = StyleTree::build(&tree, &cascade);
+        let style_tree = StyleTree::build(&tree, &cascade, 1024.0, 768.0);
 
         let div_style = style_tree.get_style(div_id).unwrap();
         assert_eq!(div_style.font_size, 20.0);
