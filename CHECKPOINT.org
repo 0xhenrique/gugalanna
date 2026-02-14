@@ -1,0 +1,157 @@
+* Gugalanna Browser - Development Checkpoint
+
+** Current Status
+
+All 22 epics complete. The browser can fetch, parse, style, layout, and render web pages with JavaScript support, page scrolling, window resize handling, link navigation, async loading with visual feedback, keyboard shortcuts, multiple tabs, form support, image rendering, CSS positioning, visual effects, CSS gradients, CSS Flexbox layout, CSS transitions infrastructure, and developer tools.
+
+- 303 tests passing
+- 10 crates in workspace
+- Full rendering pipeline operational
+- Page scrolling with mouse wheel and keyboard
+- Window resize with re-layout and vw/vh units
+- Clickable links with cursor change on hover
+- Async page loading with animated progress bar
+- Error pages for failed navigation (404, network errors)
+- Keyboard shortcuts (Ctrl+L, Ctrl+R, F5, Alt+Arrow, Escape)
+- Multiple tabs with tab bar, Ctrl+T/W, Ctrl+Tab switching
+- Ctrl+Q to quit, address bar text overflow handling
+- Form elements: text/password inputs, checkboxes, radios, buttons
+- Form submission (GET and POST)
+- Image support: PNG, JPEG, GIF, WebP with aspect ratio preservation
+- CSS positioning: position:relative, z-index, overflow:hidden
+- Visual effects: opacity, box-shadow, border-radius
+- CSS gradients: linear-gradient(), radial-gradient() backgrounds
+- CSS Flexbox: flex containers, flex-direction, justify-content, align-items, flex-grow/shrink
+- CSS Transitions: time units, easing functions, transition manager, render loop delta time
+- Developer Tools: F12 toggle, Console/Elements/Network panels, element selector with highlighting
+
+*** Try it now:
+#+begin_src bash
+cargo run -- --demo                      # Hello World demo
+cargo run -- --render https://example.com  # Render a URL
+cargo run -- --file test-pages/scroll.html  # Test scrolling
+cargo run -- --file test-pages/viewport.html  # Test resize with vw/vh units
+cargo run -- --file test-pages/links.html  # Test link navigation and hover
+cargo run -- --file test-pages/images.html  # Test image rendering
+cargo run -- --file test-pages/positioning.html  # Test CSS positioning
+cargo run -- --file test-pages/visual-effects.html  # Test visual effects
+cargo run -- --file test-pages/gradients.html  # Test CSS gradients
+cargo run -- --file test-pages/flexbox.html  # Test CSS Flexbox layout
+cargo run -- --file test-pages/transitions.html  # Test CSS transitions
+cargo run -- --file test-pages/devtools.html  # Test Developer Tools (F12)
+cargo run -- --render https://httpstat.us/404  # Test error page
+
+# Tab shortcuts:
+# Ctrl+T - New tab (with address bar focused)
+# Ctrl+W - Close current tab (closes app if last tab)
+# Ctrl+Tab - Next tab
+# Ctrl+Shift+Tab - Previous tab
+# Ctrl+Q - Quit browser
+# Click tabs to switch, click X to close
+
+# DevTools shortcuts:
+# F12 - Toggle Developer Tools
+# Console tab - View JS console.log/warn/error output
+# Elements tab - View DOM tree, expand/collapse nodes
+# Network tab - View HTTP requests (status, size, timing)
+# Select button - Click to inspect element on page
+#+end_src
+
+** Architecture Overview
+
+#+begin_example
+┌─────────────────────────────────────────────────────────────┐
+│                      Browser Shell                          │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  [<] [>]  [ Address Bar__________________ ]  [Go]   │   │  ← Chrome (48px)
+│  └─────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                                                     │   │
+│  │                  Page Content                       │   │  ← Viewport
+│  │                                                     │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+
+Pipeline: URL → HTTP → HTML → DOM → CSS → Style → Layout → Paint → Display
+                                      ↓
+                                 JavaScript
+#+end_example
+
+** Completed Epics (1-22)
+
+| Epic | Name                | Key Features                                           |
+|------+---------------------+--------------------------------------------------------|
+|    1 | Project Foundation  | 10-crate workspace, Nix shell, SDL2 integration        |
+|    2 | HTML Parser         | HTML5 tokenizer, tree builder, 150+ entities           |
+|    3 | CSS Parser          | Selectors, cascade, specificity, colors, lengths       |
+|    4 | Style Computation   | Selector matching, inheritance, value resolution       |
+|    5 | Layout Engine       | Block/inline formatting, box tree, text measurement    |
+|    6 | Rendering           | Display list, SDL2 backend, font rendering (fontdue)   |
+|    7 | JavaScript          | QuickJS runtime, DOM bindings, event handling          |
+|    8 | Browser Shell       | Chrome UI, navigation history, address bar             |
+|    9 | Page Scrolling      | Mouse wheel, keyboard scroll, viewport clipping        |
+|   10 | Window Resize       | Re-layout on resize, chrome width, vw/vh units         |
+|   11 | Link Navigation     | Anchor click detection, URL resolution, hover cursor   |
+|   12 | Loading States      | Async loading, progress bar, cancellation, error pages |
+|   13 | Keyboard Shortcuts  | Ctrl+L, Ctrl+R, F5, Alt+Arrows, Escape stop/blur       |
+|   14 | Multiple Tabs       | Tab bar, Ctrl+T/W/Tab, tab switching, Ctrl+Q quit      |
+|   15 | Form Support        | Text/password/checkbox/radio inputs, GET/POST submit   |
+|   16 | Images              | <img> element, PNG/JPEG/GIF/WebP, aspect ratio         |
+|   17 | CSS Positioning     | position:relative, z-index stacking, overflow:hidden   |
+|   18 | Visual Effects      | opacity, box-shadow (layered blur), border-radius      |
+|   19 | CSS Gradients       | linear-gradient(), radial-gradient(), color stops      |
+|   20 | Flexbox Layout      | flex container, direction, justify/align, grow/shrink  |
+|   21 | CSS Transitions     | time units, easing functions, transition manager       |
+|   22 | Developer Tools     | F12 toggle, Console/Elements/Network, element selector |
+
+** Future Epics
+
+*** Epic 23: TBD
+
+** Crate Structure
+
+| Crate    | Purpose                          | Tests |
+|----------+----------------------------------+-------|
+| gugalanna | Main binary                      |     0 |
+| net      | HTTP client (reqwest)            |     1 |
+| html     | HTML5 parser                     |    84 |
+| css      | CSS parser                       |    79 |
+| dom      | DOM tree                         |     2 |
+| style    | Style computation                |    38 |
+| layout   | Layout engine                    |    31 |
+| render   | Display list + SDL2 backend      |    10 |
+| js       | JavaScript (QuickJS)             |    17 |
+| shell    | Browser chrome + event loop      |    39 |
+
+** Quick Commands
+
+#+begin_src bash
+cargo check          # Type check
+cargo build          # Debug build
+cargo build --release  # Release build
+cargo test           # Run all tests
+cargo run -- --help  # Show usage
+cargo run -- --demo  # Hello World demo
+cargo run -- --render <URL>  # Render URL in window
+cargo run -- <URL>   # Fetch and dump DOM tree (text mode)
+#+end_src
+
+** File Structure
+
+#+begin_example
+gugalanna/
+├── Cargo.toml              # Workspace root
+├── CHECKPOINT.org          # This file
+├── shell.nix               # Nix development environment
+└── crates/
+    ├── gugalanna/          # Main binary (src/main.rs)
+    ├── net/                # HTTP client
+    ├── html/               # HTML tokenizer + tree builder
+    ├── css/                # CSS tokenizer + parser
+    ├── dom/                # DOM tree structure
+    ├── style/              # Cascade, matching, resolution
+    ├── layout/             # Box tree, block/inline layout
+    ├── render/             # Display list, SDL2, fonts
+    ├── js/                 # QuickJS runtime, DOM bindings
+    └── shell/              # Browser chrome, navigation, events
+#+end_example
